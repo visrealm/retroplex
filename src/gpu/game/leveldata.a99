@@ -1,0 +1,126 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; LoadLevel - Initialize level and load visible tiles
+; Expands 1-byte level data from $1800 to 2-byte format at $9000
+;
+LoadLevel:
+    LI      R15, >9FFE
+
+    ; Clear frame counters
+    CLR     @FRAME_COUNTER
+    CLR     @DISPLAY_COUNTER
+
+    SETO    R0
+    MOVB    R0, @FACING_LEFT
+    CLR     @MURPHY_MOVE_STATE
+
+    ; Initialize random seed
+    LI      R0, >4A3F                   ; Initial seed value (arbitrary non-zero)
+    MOV     R0, @RANDOM_SEED
+
+    ; Expand level data from $1800 (1-byte) to $9000 (2-byte)
+    CALL    @ExpandLevelData
+
+    CALL    @ScrollToMurphy
+
+    CALL    @SetupScrollContext
+
+    CALL    @InitTime
+
+    CALL    @RenderFullLevel
+
+    RET
+
+RenderFullLevel:
+    ; SetupScrollContext already calculated tile coords in SCROLL_MIN_X/Y
+    MOV     @SCROLL_MIN_X, @LAST_SCROLL_TILE_X
+    MOV     @SCROLL_MIN_Y, @LAST_SCROLL_TILE_Y
+
+    MOV     @SCROLL_MIN_Y, R1           ;@TEMP_LOADLEVEL
+
+!loop:
+    CALL    @DrawRow
+    INC     R1
+    C       R1, @SCROLL_MAX_Y
+    JLE     -!loop
+
+    IDLE
+
+; =============================================================================
+; ExpandLevelData - Expand 1-byte level data to 2-byte format
+; Reads from LEVEL_STAGING ($1800), writes to LEVEL_WORKING ($9000)
+; Input: None
+; Output: Level data expanded with state bytes initialized to $00
+; Modifies: R0-R3
+;
+ExpandLevelData:
+    MOVB    @LEVEL_STAGING + LEVEL_INFOTRONS_IDX, R0
+    SRL     R0, 8
+    MOV     R0, @INFOTRON_COUNT
+
+    ; Initialize explosion system
+    CLR     @EXPLOSION_STARTED
+    CLR     @SHOULD_KILL_MURPHY
+    CLR     @EXPL_TIMER_HEAD
+    CLR     @EXPL_TIMER_TAIL
+
+    LI      R0, LEVEL_STAGING + LEVEL_DATA_IDX ; R0 = source pointer (1-byte per tile)
+    LI      R1, LEVEL_WORKING           ; R1 = dest pointer (2-byte per tile)
+
+    LI      R2, SRC_H * SRC_W           ; R2 = tile counter (64x24 rows)
+    CLR     R3
+    LI      R4, TYPE_MURPHY << 8        ; murphy id
+
+    CLR     @MURPHY_CELL
+
+!loop:
+    MOVB    *R0+, R3                    ; R3 = [TileID:??]
+    SRL     R3, 8                       ; R3 = [00:TileID]
+    MOVB    @TILE_BASE_TYPE(R3), R3     ; R3 = [BaseType:TileID]; CC = BaseType
+    JNE     +!notMurphy                 ; BaseType != 0: R3 = [BaseType:OrigID], done
+    SLA     R3, 8                       ; BaseType == 0: R3 = [TileID:00]
+
+!checkMurphy:
+    CB      R3, R4
+    JNE     +!notMurphy
+    MOV     R1, R4
+    AI      R4, -LEVEL_WORKING
+    MOV     R4, @MURPHY_CELL
+    SETO    R4
+
+!notMurphy:
+    MOV     R3, *R1+                    ; write [TileID:State]
+    DEC     R2
+    JNE     -!loop
+    RET
+
+; =============================================================================
+; TILE_BASE_TYPE - lookup table for tile normalization (42 entries, >00->29)
+; >00 = no conversion (normal tile); non-zero = base type to normalize to
+; For normalized tiles: tile ID -> base type, original ID stored in state byte
+;
+TILE_BASE_TYPE:
+    BYTE    >00, >00, >00, >00, >00     ; >00-$04: no conversion
+    BYTE    TYPE_RAM_CHIP               ; >05 TYPE_RAM_CHIP (self)
+    BYTE    TYPE_WALL                   ; >06 TYPE_WALL (self)
+    BYTE    >00, >00, >00, >00, >00     ; >07-$19: no conversion
+    BYTE    >00, >00, >00, >00, >00
+    BYTE    >00, >00, >00, >00, >00
+    BYTE    >00, >00, >00, >00
+    BYTE    TYPE_RAM_CHIP, TYPE_RAM_CHIP ; >1A,>1B chip variants
+    BYTE    TYPE_WALL, TYPE_WALL, TYPE_WALL, TYPE_WALL, TYPE_WALL ; >1C-$25 hardware variants
+    BYTE    TYPE_WALL, TYPE_WALL, TYPE_WALL, TYPE_WALL, TYPE_WALL
+    BYTE    TYPE_RAM_CHIP, TYPE_RAM_CHIP ; >26,>27 chip variants
+    BYTE    TYPE_WALL, TYPE_WALL, TYPE_WALL ; >28,>29,>2A border tiles
+    EVEN

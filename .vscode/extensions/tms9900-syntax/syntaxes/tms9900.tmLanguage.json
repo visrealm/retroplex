@@ -1,0 +1,167 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "TMS9900 Assembly",
+  "scopeName": "source.asm.tms9900",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#numbers" },
+    { "include": "#labels" },
+    { "include": "#label-addresses" },
+    { "include": "#preprocessor" },
+    { "include": "#directives" },
+    { "include": "#control" },
+    { "include": "#instructions" },
+    { "include": "#registers" },
+    { "include": "#strings" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.todo.semicolon.tms9900",
+          "begin": ";",
+          "end": "$",
+          "patterns": [
+            {
+              "name": "keyword.todo.tms9900",
+              "match": "\\b(TODO|FIXME|HACK|BUG|XXX|NOTE)\\b:?"
+            }
+          ]
+        },
+        {
+          "name": "comment.todo.asterisk.tms9900",
+          "begin": "^\\*",
+          "end": "$",
+          "patterns": [
+            {
+              "name": "keyword.todo.tms9900",
+              "match": "\\b(TODO|FIXME|HACK|BUG|XXX|NOTE)\\b:?"
+            }
+          ]
+        }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        {
+          "name": "entity.name.function.label.tms9900",
+          "match": "^[a-zA-Z_][a-zA-Z0-9_]*:?"
+        },
+        {
+          "name": "entity.name.function.label.tms9900",
+          "match": "^[a-zA-Z_][a-zA-Z0-9_]*\\s+(?=AORG|BSS|BYTE|DATA|DORG|END|EQU|EVEN|TEXT|RORG)"
+        },
+        {
+          "name": "constant.numeric.local.label.tms9900",
+          "match": "^![a-zA-Z_][a-zA-Z0-9_]*"
+        }
+      ]
+    },
+    "label-addresses": {
+      "patterns": [
+        {
+          "name": "entity.name.type.address.tms9900",
+          "match": "[@|\\-|\\+|\\*]!?[a-zA-Z_][a-zA-Z0-9_]*"
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "keyword.control.preprocessor.tms9900",
+          "match": "\\.(defm|endm|ifdef|ifndef|ifeq|ifne|ifge|ifgt|ifle|iflt|else|endif|rept|endr|print|error)\\b",
+          "captures": {
+            "0": { "name": "keyword.control.preprocessor.tms9900" }
+          }
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "name": "keyword.directive.tms9900",
+          "match": "\\b(AORG|BSS|BYTE|DATA|DORG|END|EQU|EVEN|TEXT|RORG|DEF|REF|COPY|LIST|PAGE|TITL|IDT|PSEG|PEND|CSEG|CEND|DSEG|DEND|SREF|LOAD|UNL)\\b"
+        }
+      ]
+    },
+    "control": {
+      "patterns": [
+        {
+          "name": "keyword.control.directive.tms9900",
+          "match": "\\b(CALL|RET|B|BL|RT|JEQ|JMP|JGT|JH|JHE|JL|JLE|JLT|JMP|JNC|JNE|JNC|JCC|JOP)\\b"
+        }
+      ]
+    },
+    "instructions": {
+      "patterns": [
+        {
+          "name": "keyword.mnemonic.tms9900",
+          "match": "\\b(A|AB|ABS|AI|ANDI|B|BL|BLWP|C|CB|CI|CKOF|CKON|CLR|COC|CZC|DEC|DECT|DIV|IDLE|INC|INCT|INV|LDCR|LI|LIMI|LREX|LWPI|MOV|MOVB|MPY|NEG|ORI|RSET|RTWP|S|SB|SBO|SBZ|SETO|SLA|SOC|SOCB|SRA|SRC|SRL|STCR|STST|STWP|SWPB|SZC|SZCB|TB|X|XOP|XOR|PUSH|POP)\\b"
+        }
+      ]
+    },
+    "registers": {
+      "patterns": [
+        {
+          "name": "variable.parameter.register.tms9900",
+          "match": "\\bR([0-9]|1[0-5])\\b"
+        },
+        {
+          "name": "variable.language.register.tms9900",
+          "match": "\\b(SP|PC|WP|ST)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.tms9900",
+          "match": "(>|0x)[0-9A-Fa-f]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.tms9900",
+          "match": "\\b[01]+[Bb]\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.tms9900",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.tms9900",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.tms9900",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.tms9900",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.tms9900",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.tms9900",
+          "match": "[+\\-*/()@]"
+        }
+      ]
+    }
+  }
+}

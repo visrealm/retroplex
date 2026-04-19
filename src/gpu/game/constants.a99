@@ -1,0 +1,205 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; VDP MEMORY MAP
+; =============================================================================
+
+; Name tables (tile indices for display)
+NAME_TABLE          EQU >2000           ; First page (left side of screen)
+NAME_TABLE_NEXT     EQU NAME_TABLE + 32 ; Next row offset (for 2-row tiles)
+
+; Color tables (per-tile colors in bitmap mode)
+COLOR_TABLE         EQU >2800           ; First page (left side)
+COLOR_TABLE_NEXT    EQU COLOR_TABLE + 32 ; Next row offset (for 2-row tiles)
+
+; Sprite attribute tables (split-screen system uses two SATs)
+SAT_UPPER           EQU >2700           ; Upper screen sprites (scanlines 0-83)
+SAT_LOWER           EQU >2780           ; Lower screen sprites (scanlines 84+)
+
+; Tile/pattern data
+LEVEL_MAP           EQU >2300           ; Tile mapping data (tile ID -> pattern)
+ADV_TILE_MAP        EQU >2B00           ; Advanced tile map (8 bytes per entry)
+
+; Graphics data
+BITMAP_ADDR         EQU >1800           ; Bottom panel bitmap
+BMP_FONT_ADDR       EQU >1E00           ; Bitmap font patterns
+
+; VDP register access
+VREG                EQU >6000           ; F18A VDP register port
+
+; =============================================================================
+; LEVEL DATA MEMORY
+; =============================================================================
+
+LEVEL_STAGING       EQU >1800           ; Source level data from CPU (1 byte/tile)
+LEVEL_WORKING       EQU >9000           ; Expanded working data (2 bytes/tile)
+STATUS_WORKING      EQU LEVEL_WORKING + 1 ; Status byte (enemy state etc), interleaved
+
+; =============================================================================
+; LEVEL DIMENSIONS
+; =============================================================================
+
+SRC_W               EQU 64              ; Source row stride (60 tiles + 4 pad, 1 byte/tile)
+SRC_W_WORKING       EQU 128             ; Working row stride (60 tiles + 4 pad, 2 bytes/tile)
+SRC_H               EQU 24              ; Level height including border
+
+LEVEL_NUM_IDX       EQU 0
+LEVEL_GRAV_IDX      EQU LEVEL_NUM_IDX + 1
+LEVEL_FRZ_ZONKS_IDX EQU LEVEL_GRAV_IDX + 1
+LEVEL_INFOTRONS_IDX EQU LEVEL_FRZ_ZONKS_IDX + 1
+LEVEL_GRAVPORTS_IDX EQU LEVEL_INFOTRONS_IDX + 1
+LEVEL_DATA_IDX      EQU LEVEL_GRAVPORTS_IDX + 1
+
+; Rendering parameters
+DRAW_TILES          EQU 16              ; Tiles per render pass (16*2 = 32 per row)
+DRAW_ROWS           EQU 12              ; Visible tile rows (fits 24 name rows)
+NAME_ROW_LEN        EQU 32              ; Subtiles per name table row
+NAME_ROW_STRIDE     EQU 64              ; Bytes per two source rows
+
+; =============================================================================
+; TILE NEIGHBOR OFFSETS (for LEVEL_WORKING traversal)
+; =============================================================================
+
+TILE_ABOVE          EQU -SRC_W_WORKING
+TILE_BELOW          EQU SRC_W_WORKING
+TILE_LEFT           EQU -2
+TILE_RIGHT          EQU 2
+TILE_ABOVE_LEFT     EQU TILE_ABOVE + TILE_LEFT
+TILE_ABOVE_RIGHT    EQU TILE_ABOVE + TILE_RIGHT
+TILE_BELOW_LEFT     EQU TILE_BELOW + TILE_LEFT
+TILE_BELOW_RIGHT    EQU TILE_BELOW + TILE_RIGHT
+
+; Neighbor shortcuts: pre-combined LEVEL_WORKING + TILE_xxx offsets
+LW_ABOVE            EQU LEVEL_WORKING + TILE_ABOVE
+LW_BELOW            EQU LEVEL_WORKING + TILE_BELOW
+LW_LEFT             EQU LEVEL_WORKING + TILE_LEFT
+LW_RIGHT            EQU LEVEL_WORKING + TILE_RIGHT
+LW_ABOVE_LEFT       EQU LEVEL_WORKING + TILE_ABOVE_LEFT
+LW_ABOVE_RIGHT      EQU LEVEL_WORKING + TILE_ABOVE_RIGHT
+LW_BELOW_LEFT       EQU LEVEL_WORKING + TILE_BELOW_LEFT
+LW_BELOW_RIGHT      EQU LEVEL_WORKING + TILE_BELOW_RIGHT
+
+SW_ABOVE            EQU STATUS_WORKING + TILE_ABOVE
+SW_BELOW            EQU STATUS_WORKING + TILE_BELOW
+SW_LEFT             EQU STATUS_WORKING + TILE_LEFT
+SW_RIGHT            EQU STATUS_WORKING + TILE_RIGHT
+SW_ABOVE_LEFT       EQU STATUS_WORKING + TILE_ABOVE_LEFT
+SW_ABOVE_RIGHT      EQU STATUS_WORKING + TILE_ABOVE_RIGHT
+SW_BELOW_LEFT       EQU STATUS_WORKING + TILE_BELOW_LEFT
+SW_BELOW_RIGHT      EQU STATUS_WORKING + TILE_BELOW_RIGHT
+
+; =============================================================================
+; SPLIT-SCREEN SPRITE SYSTEM
+; =============================================================================
+
+MIDLINE             EQU 92              ; Scanline where VR5 switches SAT
+BOTTOM              EQU 192 - 24        ; Y limit for sprite visibility
+
+; =============================================================================
+; CPU/GPU SHARED VARIABLES (>2F00 range)
+; =============================================================================
+
+; Scroll state
+SCROLL_X            EQU >2F00           ; X position in pixels (0-688)
+SCROLL_Y            EQU >2F02           ; Y position in pixels (0-200)
+
+MAX_SCROLL_X        EQU 59 * 16 - 256 - 1
+MAX_SCROLL_Y        EQU 23 * 16 - (192 - 24) - 1
+
+FRAME_COUNTER       EQU >2F04           ; Frame counter (updated by UpdateScroll)
+
+; Bitmap text rendering parameters
+BMP_X               EQU >2F06           ; Text X position
+BMP_Y               EQU >2F07           ; Text Y position
+BMP_TEXT_ADDR       EQU >2F08           ; Pointer to text string
+BMP_TEXT_LEN        EQU >2F0A           ; Text length
+BMP_TEXT_COLOR      EQU >2F0B           ; Text color
+
+USER_INPUT          EQU >2F10           ; User input
+MURPHY_TILE_INDEX   EQU >2F12           ; Murphy animation frame (CPU reads for pattern update)
+MURPHY_MOVE_STATE   EQU >2F14           ; Movement state: direction*8 + frame (0 = idle)
+
+; =============================================================================
+; INPUT FLAGS
+; =============================================================================
+INPUT_DOWN          EQU 1 << 0
+INPUT_UP            EQU 1 << 1
+INPUT_LEFT          EQU 1 << 2
+INPUT_RIGHT         EQU 1 << 3
+INPUT_OK            EQU 1 << 4
+INPUT_CANCEL        EQU 1 << 5
+
+; =============================================================================
+; TILE TYPES
+; =============================================================================
+TYPE_EMPTY          EQU >00
+TYPE_ZONK           EQU >01
+TYPE_BASE           EQU >02
+TYPE_MURPHY         EQU >03
+TYPE_INFOTRON       EQU >04
+TYPE_RAM_CHIP       EQU >05
+TYPE_WALL           EQU >06
+TYPE_EXIT           EQU >07
+TYPE_DISK_ORANGE    EQU >08
+TYPE_PORT_RIGHT     EQU >09
+TYPE_PORT_DOWN      EQU >0A
+TYPE_PORT_LEFT      EQU >0B
+TYPE_PORT_UP        EQU >0C
+TYPE_GRAV_RIGHT     EQU >0D
+TYPE_GRAV_DOWN      EQU >0E
+TYPE_GRAV_LEFT      EQU >0F
+TYPE_GRAV_UP        EQU >10
+TYPE_SNIK_SNAK      EQU >11
+TYPE_DISK_YELLOW    EQU >12
+TYPE_TERMINAL       EQU >13
+TYPE_DISK_RED       EQU >14
+TYPE_PORT_VERT      EQU >15
+TYPE_PORT_HORIZ     EQU >16
+TYPE_PORT_4WAY      EQU >17
+TYPE_ELECTRON       EQU >18
+TYPE_BUG            EQU >19
+TYPE_EXPLOSION      EQU >1F
+
+TILE_ATTR_BLANK     EQU >8100
+
+; =============================================================================
+; TIME DISPLAY
+; =============================================================================
+
+TIME_HOURS_X        EQU 48 << 8         ; Hours digit X position (high byte)
+TIME_MINUTES_X      EQU 62 << 8         ; Minutes digit X position
+TIME_SECONDS_X      EQU 76 << 8         ; Seconds digit X position
+TIME_Y              EQU 3               ; Time display Y position
+
+INFO_X              EQU 114 << 8        ; Infotron display X position
+INFO_Y              EQU 14              ; Infotron display Y position
+
+; =============================================================================
+; DEBUG / DEVELOPMENT
+; =============================================================================
+
+SHOW_PROCESSING     EQU 0               ; Set to 1 to visualize processing
+
+; =============================================================================
+; GAMEPLAY FEATURES
+; =============================================================================
+
+KILL                EQU 1               ; Set to 1 to enable Murphy-enemy explosion
+
+; =============================================================================
+; EXPLOSION TIMER QUEUE
+; =============================================================================
+
+EXPL_TIMER_CAPACITY EQU 16              ; Must be a power of 2
+EXPL_TIMER_MASK     EQU EXPL_TIMER_CAPACITY - 1 ; Wrap mask (>000F)
+EXPL_FUSE_FRAMES    EQU 12              ; Frames before a chained explosion detonates

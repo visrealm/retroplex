@@ -1,0 +1,46 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; CRITICAL ARCHITECTURE NOTE:
+; This code runs INSIDE the VDP as a "virtual GPU" program, not on the main CPU.
+; Therefore, VRAM reads/writes are FAST (local memory access), not slow like external VDP access.
+; Optimization priorities: code size > VRAM accesses. RAM vs VRAM access speeds are comparable.
+
+    COPY    "game/constants.a99"
+
+    DORG    >4000
+    COPY    "game/globals.a99"
+
+; =============================================================================
+; GPU Function Entry Points
+; -----------------------------------------------------------------------------
+    AORG    >B400
+Entry:
+    B       @LoadLevel                  ; >B400: Jump to LoadLevel (4 bytes)
+    B       @GameFrame                  ; >B404: Jump to GameFrame (4 bytes)
+    B       @RenderTextExt              ; >B408: Jump to RenderTextExt (4 bytes)
+
+    COPY    "game/math.a99"
+
+    COPY    "game/leveldata.a99"
+    COPY    "game/gameloop.a99"
+    COPY    "game/scroll.a99"
+
+    COPY    "game/input.a99"
+
+    COPY    "game/render/tiles.a99"
+    COPY    "game/render/text.a99"
+    COPY    "game/render/sprites.a99"
+
+    COPY    "game/movingobjects.a99"
+
+    COPY    "game/statusbar.a99"

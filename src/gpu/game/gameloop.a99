@@ -1,0 +1,94 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+StartGame:
+    ;LI R0, GameFrame
+    ;MOV R0, @VREG + >36
+    ;LI R0, >2200          ; re-trigger
+    ;MOVB R0, @VREG + >32
+    IDLE
+    ;JMP GameFrame
+
+; =============================================================================
+; GameFrame - Stream in new tiles when scroll position changes
+; Call after updating SCROLL_X and/or SCROLL_Y
+; Checks tile boundaries and renders newly visible columns/rows
+; Modifies: R0-R11
+;
+GameFrame:
+    ; Murphy death state machine
+    MOV     @SHOULD_KILL_MURPHY, R0
+    JEQ     +!murphyAlive               ; 0 = alive, normal path
+
+    CI      R0, >FFFF                   ; freshly killed?
+    JNE     +!countdown
+    LI      R0, 128                     ; init 128-frame countdown
+    MOV     R0, @SHOULD_KILL_MURPHY
+    JMP     +!skipInput
+
+!countdown:
+    DEC     @SHOULD_KILL_MURPHY
+    JNE     +!skipInput                 ; still counting
+    IDLE                                ; countdown reached 0 -> signal BASIC
+
+!murphyAlive:
+    CALL    @HandleInput
+!skipInput:
+
+    ; Update scroll position (must sync with sprite updates)
+    CALL    @ScrollToMurphy
+    CALL    @SetupScrollContext
+
+    ; Only process enemies every other frame
+    ; On skip frames, SAT data AND scroll persist from previous frame
+    ; VR5 was already reset to upper SAT by WaitAndSwitchUpperSAT
+    INC     @DISPLAY_COUNTER
+    MOV     @DISPLAY_COUNTER, R0
+    ANDI    R0, 1
+    ;JNE     +!skipEnemies
+
+    ; Increment game frame counter (half rate)
+    INC     @FRAME_COUNTER
+
+    CALL    @UpdateExplosionTimers
+    CALL    @GenerateMovingObjectList
+    CALL    @InitSATFrameBuffers
+    MOV     @SHOULD_KILL_MURPHY, R0     ; skip Murphy update when dead
+    JNE     +!skipMurphy
+    CALL    @UpdateMurphy
+!skipMurphy:
+    CALL    @ProcessMovingObjectList
+    CALL    @FinalizeSATs
+
+!skipEnemies:
+
+    ; Note: Scanline switch to lower SAT happens during active display
+    ; WaitAndSwitchSAT should be called after GPU IDLE, during rendering
+    CALL    @UpdateScroll
+
+!done:
+    ; Wait for scanline 84 and switch to lower SAT for bottom half of screen
+    CALL    @WaitAndSwitchLowerSAT
+
+    CALL    @UpdateStatusBar
+
+    CALL    @WaitAndSwitchUpperSAT
+
+    ;MOV     @DISPLAY_COUNTER, R0
+    ;ANDI    R0, 1
+    ;JEQ     +!skipEnemies2
+
+!skipEnemies2:
+
+    JMP     GameFrame
+
+    IDLE

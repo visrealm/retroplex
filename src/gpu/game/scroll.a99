@@ -1,0 +1,183 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; SetupScrollContext - Setup helper variables when scroll changes
+; Call this once when SCROLL_X or SCROLL_Y changes, before any RenderTile calls
+; Reads: SCROLL_X, SCROLL_Y
+; Writes: SCROLL_MIN_X, SCROLL_MAX_X, SCROLL_MIN_Y, SCROLL_MAX_Y
+; Modifies: R0-R3
+;
+SetupScrollContext:
+    ; Calculate visible range (add 8px border offset, then convert pixels to tiles)
+    MOV     @SCROLL_X, R0
+    JGT     +!minXOk
+    CLR     @SCROLL_X
+    CLR     R0
+!minXOk:
+    CI      R0, MAX_SCROLL_X
+    JLE     +!maxXOk
+    LI      R0, MAX_SCROLL_X
+    MOV     R0, @SCROLL_X
+!maxXOk:
+    AI      R0, 8                       ; add 8-pixel border offset
+    MOV     R0, @I_SCROLL_X
+    MOV     R0, R1                      ; keep for later
+    SRL     R0, 4                       ; / 16 (convert pixels to tiles)
+    MOV     R0, @SCROLL_MIN_X
+    AI      R0, 16                      ; 17 tiles wide (min + 16 = 0-16)
+    MOV     R0, @SCROLL_MAX_X
+
+    MOV     @SCROLL_Y, R0
+    JGT     +!minYOk
+    CLR     @SCROLL_Y
+    CLR     R0
+!minYOk:
+    CI      R0, MAX_SCROLL_Y
+    JLE     +!maxYOk
+    LI      R0, MAX_SCROLL_Y
+    MOV     R0, @SCROLL_Y
+!maxYOk:
+    AI      R0, 8                       ; add 8-pixel border offset
+    MOV     R0, @I_SCROLL_Y
+    MOV     R0, R2                      ; keep for later
+    SRL     R0, 4                       ; / 16 (convert pixels to tiles)
+    MOV     R0, @SCROLL_MIN_Y
+    AI      R0, 11                      ; 12 tiles tall
+    MOV     R0, @SCROLL_MAX_Y
+
+    ; VR27 (horizontal scroll) = I_SCROLL_X & 0xFF (low 8 bits of pixel scroll)
+    SWPB    R1                          ; move to high byte for MOVB
+    MOVB    R1, @VREG + 27              ; write VR27
+
+    ANDI    R1, 1                       ; determine start page
+    ORI     R1, NAME_TABLE >> 10
+    SWPB    R1
+    MOVB    R1, @VREG + 2
+
+    ; VR28 (vertical scroll) = I_SCROLL_Y & 0xFF (low 8 bits of pixel scroll)
+    SWPB    R2                          ; move to high byte for MOVB
+    MOVB    R2, @VREG + 28              ; write VR28
+    RET
+
+UpdateScroll:
+    ; Check if tile boundaries changed
+    MOV     @SCROLL_MIN_X, R0
+    C       R0, @LAST_SCROLL_TILE_X
+    JEQ     +!checkVertical
+
+    ; Handle horizontal scrolling
+    JGT     +!scrollRight
+    MOV     @SCROLL_MIN_X, R0
+    JMP     +!updateX
+!scrollRight:
+    MOV     @SCROLL_MAX_X, R0
+!updateX:
+    CALL    @DrawColumn
+    MOV     @SCROLL_MIN_X, @LAST_SCROLL_TILE_X
+
+!checkVertical:
+    MOV     @SCROLL_MIN_Y, R1
+    C       R1, @LAST_SCROLL_TILE_Y
+    JEQ     +!done
+
+    ; Handle Y scrolling
+    JGT     +!scrollDown
+    MOV     @SCROLL_MIN_Y, R1
+    JMP     +!updateY
+!scrollDown:
+    MOV     @SCROLL_MAX_Y, R1
+!updateY:
+    CALL    @DrawRow
+    MOV     @SCROLL_MIN_Y, @LAST_SCROLL_TILE_Y
+!done:
+    RET
+
+; =============================================================================
+; DrawRow - Draw one horizontal game row (32 tiles)
+; Input: R0 = source Y (0-23)
+; Modifies: R2-R10, R12
+;
+DrawRow:
+    MOV     @SCROLL_MIN_X, R0
+
+!loop:
+    CLR     R5
+    CALL    @RenderTile
+    INC     R0
+    C       R0, @SCROLL_MAX_X
+    JLE     -!loop                      ; loop while srcX <= SCROLL_MAX_X
+    RET
+
+; =============================================================================
+; DrawColumn - Draw one vertical game column (12 tiles)
+; Input: R0 = source X (0-59)
+; Modifies: R2-R10, R12
+;
+DrawColumn:
+    MOV     @SCROLL_MIN_Y, R1
+
+!loop:
+    CLR     R5
+    CALL    @RenderTile
+    INC     R1
+    C       R1, @SCROLL_MAX_Y
+    JLE     -!loop                      ; loop while srcY <= SCROLL_MAX_Y
+
+    RET
+
+ScrollToMurphy:
+    MOV     @MURPHY_CELL, R4
+    SRL     R4, 1                       ; div by two because LEVEL_WORKING is words
+    MOV     R4, R0                      ; get XPOS
+    ANDI    R0, >003f
+
+    SRL     R4, 6                       ; get YPOS
+    SLA     R4, 4                       ; Y in pixels
+    AI      R4, -(168/2)                ; center horizontally
+
+    SLA     R0, 4                       ; X in pixels
+    AI      R0, -(256/2)                ; center horizontally
+
+    ; Apply sub-cell offset if moving
+    MOV     @MURPHY_MOVE_STATE, R3
+    JEQ     +!noOffset                  ; state 0 = idle, no offset
+
+    ; Extract frame and direction from state
+    ; State = direction*8 + frame, direction: 1=U, 2=L, 3=D, 4=R
+    MOV     R3, R5
+    ANDI    R5, >0007                   ; frame (0-7)
+    SLA     R5, 1                       ; frame * 2
+    AI      R5, -16                     ; offset = (frame * 2) - 16
+
+    SRL     R3, 3                       ; direction code (1-4)
+    DEC     R3                          ; 0-3 (U,L,D,R)
+
+    ; For U/L (0,1): negate offset
+    ; For D/R (2,3): keep offset
+    CI      R3, 2
+    JHE     +!noNeg
+    NEG     R5
+!noNeg:
+    ; Apply to Y for U/D (0,2), X for L/R (1,3)
+    MOV     R3, R1
+    ANDI    R1, 1
+    JNE     +!xAxis
+    A       R5, R4                      ; add to Y
+    JMP     +!noOffset
+!xAxis:
+    A       R5, R0                      ; add to X
+
+!noOffset:
+    MOV     R4, @SCROLL_Y
+    MOV     R0, @SCROLL_X
+    RET

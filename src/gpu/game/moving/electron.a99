@@ -1,0 +1,42 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; ENTRY POINT
+; =============================================================================
+
+UpdateElectron:
+    LI      R0, ELECTRON_CONFIG
+    B       @UpdateEnemy
+
+; =============================================================================
+; CONFIGURATION
+; =============================================================================
+
+ELECTRON_CONFIG:
+    DATA    >1800                       ; Enemy ID, flags
+    DATA    >2F08                       ; Fixed tile ID (electron doesn't animate tiles)
+    DATA    +!getElectronSpriteData     ; Sprite lookup function
+
+; =============================================================================
+; getElectronSpriteData
+; -----------------------------------------------------------------------------
+; Look up sprite data for electron animation frame
+;
+; Input:  None (electrons use same pattern for all frames)
+; Output: R2 = pattern:attributes (high byte = pattern, low byte = attributes)
+; Modifies: R2
+; =============================================================================
+
+!getElectronSpriteData:
+    LI      R2, >BC08                   ; Pattern >BC (188), 16px mode, palette 0
+    RT

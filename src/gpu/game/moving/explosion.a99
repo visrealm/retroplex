@@ -1,0 +1,476 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; DO NOT TOUCH: R12, R13
+; R12 = current tile location in LEVEL_WORKING table
+; R14 = Current tile ID and status
+UpdateExplosion:
+    ; Verify tile is still explosion type
+    LI      R2, TYPE_EXPLOSION << 8
+    CB      R2, R14
+    JEQ     +!validTile
+    RT
+
+!validTile:
+    ; Only update every 4th frame
+    MOV     @FRAME_COUNTER, R2
+    ANDI    R2, >0003
+    JEQ     +!doUpdate
+    RT
+
+!doUpdate:
+    ; Extract state byte (low byte of R14)
+    MOV     R14, R2
+    SZCB    R2, R2                      ; clear MSB, R2 = >00xx (state only)
+
+    ; Check if infotron explosion (state >= 0x80)
+    CI      R2, >0080
+    JHE     +!infotronExplosion
+
+    ; === REGULAR EXPLOSION ===
+    ; R2 = current state (frame index 0-7)
+    ; Look up frame tile and render
+    SLA     R2, 1                       ; word index
+    MOV     @REGULAR_EXPLOSION_FRAMES(R2), R5
+    CALL    @RenderTempTile
+
+    ; Decrement state
+    MOVB    @STATUS_WORKING(R12), R2    ; read state byte
+    AI      R2, >FF00
+    MOVB    R2, @STATUS_WORKING(R12)    ; write decremented state
+
+    ; Check if explosion finished (state == 0)
+    JEQ     +!regularDone
+    RT
+
+!regularDone:
+    ; Regular explosion done: become empty tile
+    CLR     @LEVEL_WORKING(R12)
+    CLR     @EXPLOSION_STARTED
+    RT
+
+!infotronExplosion:
+    ; === INFOTRON EXPLOSION ===
+    ; R2 = current state (negative: 0xF8 to 0xFF), mask to get frame index
+    ANDI    R2, >0007                   ; mask to 0-7 frame index
+
+    ; Look up frame tile and render
+    SLA     R2, 1                       ; word index
+    MOV     @INFOTRON_EXPLOSION_FRAMES(R2), R5
+    CALL    @RenderTempTile
+
+    ; Increment state (negative counting toward zero)
+    MOVB    @STATUS_WORKING(R12), R2    ; read state byte
+    AI      R2, >0100
+    MOVB    R2, @STATUS_WORKING(R12)    ; write incremented state
+
+    ; Check if finished (state == 0)
+    JNE     +!done
+
+!infotronDone:
+    ; Infotron explosion done: become infotron
+    LI      R2, TYPE_INFOTRON << 8
+    MOV     R2, @LEVEL_WORKING(R12)
+    CLR     @EXPLOSION_STARTED
+
+!done:
+    RT
+
+; =============================================================================
+; UPDATE EXPLOSION TIMERS
+; =============================================================================
+; Called once per frame from main game loop
+; Processes the circular explosion timer queue: entries expire in FIFO order
+; since all delays are fixed at 13 frames.
+;
+UpdateExplosionTimers:
+    ; Fast-path: check if queue is empty
+    MOV     @EXPL_TIMER_HEAD, R1
+    C       R1, @EXPL_TIMER_TAIL
+    JEQ     +!done
+
+    ; Load current frame low byte for comparison (R2 high byte throughout)
+    CLR     R2
+    MOVB    @FRAME_COUNTER+1, R2        ; R2 = cur_frame_low:0
+
+!loop:
+    ; Check empty
+    MOV     @EXPL_TIMER_HEAD, R1
+    C       R1, @EXPL_TIMER_TAIL
+    JEQ     +!done
+
+    ; Compute head entry pointer
+    MOV     R1, R3
+    SLA     R3, 2                       ; * 4
+    AI      R3, EXPL_TIMER_POOL         ; R3 = head entry ptr
+
+    ; Check if fire_frame matches current frame
+    CLR     R1
+    MOVB    @2(R3), R1                  ; R1 = fire_frame:0
+    CB      R1, R2                      ; compare fire_frame to current frame
+    JNE     +!done                      ; head not expired, stop
+
+    ; Load position and type
+    MOV     *R3, R0                     ; R0 = position
+    CLR     R1
+    MOVB    @3(R3), R1                  ; R1 high byte = type (0=regular, 1=electron)
+
+    ; Advance head
+    MOV     @EXPL_TIMER_HEAD, R3
+    INC     R3
+    ANDI    R3, EXPL_TIMER_MASK
+    MOV     R3, @EXPL_TIMER_HEAD
+
+    ; Dispatch based on type
+    CI      R1, >0100                   ; type == 1 (electron)?
+    JEQ     +!electronExpire
+
+!regularExpire:
+    CALL    @DetonateBigExplosion       ; R0 = position
+    CLR     R2
+    MOVB    @FRAME_COUNTER+1, R2        ; reload frame byte after clobber
+    JMP     -!loop
+
+!electronExpire:
+    MOV     R0, R3
+    LI      R1, (TYPE_ELECTRON << 8) | >FF
+    MOV     R1, @LEVEL_WORKING(R3)      ; write electron tile (R0 unchanged)
+    CALL    @DetonateBigExplosion       ; R0 = position
+    CLR     R2
+    MOVB    @FRAME_COUNTER+1, R2        ; reload frame byte after clobber
+    JMP     -!loop
+
+!done:
+    RET
+
+; =============================================================================
+; DETONATE BIG EXPLOSION (ELECTRON ENTRY POINT)
+; =============================================================================
+; Skips hardware/murphy/tile-type detection. Use when the tile has already
+; been overwritten but the explosion type is known to be electron (infotron).
+; Input: R0 = position offset in LEVEL_WORKING
+;
+DetonateBigExplosionElectron:
+    SETO    @EXPLOSION_STARTED
+    LI      R1, (TYPE_EXPLOSION << 8) | >F8 ; infotron explosion params
+    LI      R2, -EXPL_FUSE_FRAMES
+    JMP     DoExplosionPattern
+
+; =============================================================================
+; DETONATE BIG EXPLOSION
+; =============================================================================
+; Creates a 3x3 explosion pattern centered on position
+; Input: R0 = position offset in LEVEL_WORKING
+;
+DetonateBigExplosion:
+    ; Check if hardware with state 0
+    MOV     R0, R3
+    CLR     R1
+    MOVB    @LEVEL_WORKING(R3), R1      ; R1 = tile:0 (load tile ID only)
+    CI      R1, >0600                   ; Is it hardware?
+    JNE     +!notHardware               ; No
+    ; It's hardware, check if state == 0
+    MOVB    @STATUS_WORKING(R3), R1     ; Load state byte (sets flags)
+    JNE     +!notHardware               ; State != 0
+    RET                                 ; Hardware with state 0, don't explode
+
+!notHardware:
+    SETO    @EXPLOSION_STARTED          ; set flag
+
+    ; Check if Murphy
+    CLR     R1
+    MOVB    @LEVEL_WORKING(R3), R1      ; get tile ID in high byte
+    CI      R1, TYPE_MURPHY << 8
+    JNE     +!notMurphy
+    SETO    @SHOULD_KILL_MURPHY
+
+!notMurphy:
+    ; Determine explosion type based on electron
+    CI      R1, TYPE_ELECTRON << 8
+    JNE     +!regularExplosion
+
+    ; Electron explosion - infotron type
+    LI      R1, (TYPE_EXPLOSION << 8) | >F8 ; state -8 (0xF8, will increment to 0)
+    LI      R2, -EXPL_FUSE_FRAMES       ; negative timer
+    JMP     DoExplosionPattern
+
+!regularExplosion:
+    ; Regular explosion
+    LI      R1, (TYPE_EXPLOSION << 8) | >08 ; state 8 (8 frames)
+    LI      R2, EXPL_FUSE_FRAMES        ; positive timer
+
+DoExplosionPattern:
+    ; R1 = newTile:newState, R2 = newTimer
+    ; Save center tile params and loop state to safe registers
+    MOV     R0, R8                      ; R8 = center position (safe across loop)
+    MOV     R1, R6                      ; R6 = newTile:newState (safe across loop)
+    MOV     R2, R7                      ; R7 = newTimer (safe across loop)
+
+    ; Loop through 8 surrounding tiles
+    LI      R4, BUG_TEST_DIRECTIONS     ; offset table pointer
+    LI      R5, 8                       ; 8 tiles to process
+
+!explodeLoop:
+    MOV     *R4+, R3                    ; get offset
+    A       R8, R3                      ; add center position
+    PUSH    R4
+    PUSH    R5
+    MOV     R3, R0                      ; position for DetonateBigExplosionTile
+    MOV     R6, R1                      ; reload newTile:newState from R6
+    MOV     R7, R2                      ; reload newTimer from R7
+    CALL    @DetonateBigExplosionTile
+    POP     R5
+    POP     R4
+    DEC     R5
+    JNE     -!explodeLoop
+
+    ; Set center tile
+    MOV     R6, R1                      ; newTile:newState
+    MOV     R8, R0                      ; center position
+    MOV     R0, R3
+    MOV     R1, @LEVEL_WORKING(R3)      ; write explosion tile to center
+
+    ; Play sound - tail call
+    B       @PlayExplosionSound          ; PlayExplosionSound will RET to our caller
+
+; =============================================================================
+; DETONATE BIG EXPLOSION TILE
+; =============================================================================
+; Handles explosion for a single tile in the 3x3 pattern
+; Input: R0 = position, R1 = newTile:newState, R2 = newTimer
+;
+DetonateBigExplosionTile:
+    ; Load current tile
+    MOV     R0, R3
+    MOV     @LEVEL_WORKING(R3), R3      ; R3 = [TYPE:STATE]
+
+    ; Cleanup orphaned transition markers for falling objects being exploded.
+    ; Matches original supaplex detonateZonk/sub_4AA34 behavior.
+    ; R3 = [TYPE:STATE] throughout — never written during cleanup.
+    ; R1 = caller's newTile:newState — saved/restored via PUSH/POP.
+    PUSH    R1                          ; save caller's newTile:newState
+    MOV     R3, R1
+    ANDI    R1, >FF00                   ; R1 = tile type (high byte)
+    CI      R1, TYPE_ZONK << 8
+    JEQ     +!isFallingType
+    CI      R1, TYPE_INFOTRON << 8
+    JEQ     +!isFallingType
+    CI      R1, TYPE_DISK_ORANGE << 8
+    JNE     +!noMarkerCleanup           ; not a falling type, skip
+!isFallingType:
+    MOV     R3, R1
+    ANDI    R1, >00F0                   ; R1 = state high nibble * 16
+    CI      R1, >0010
+    JEQ     +!clean1x
+    CI      R1, >0020
+    JEQ     +!clean2x
+    CI      R1, >0030
+    JEQ     +!clean3x
+    CI      R1, >0050
+    JEQ     +!clean5x
+    CI      R1, >0060
+    JEQ     +!clean6x
+    JMP     +!noMarkerCleanup
+!clean1x:                               ; landing: CLR ABOVE (source transit >EEEE)
+    MOV     R0, R1
+    AI      R1, TILE_ABOVE
+    CLR     @LEVEL_WORKING(R1)
+    JMP     +!noMarkerCleanup
+!clean2x:                               ; post-roll-left: CLR RIGHT (source) + BELOW (reservation)
+    MOV     R0, R1
+    AI      R1, TILE_RIGHT
+    CLR     @LEVEL_WORKING(R1)
+    MOV     R0, R1
+    AI      R1, TILE_BELOW
+    CLR     @LEVEL_WORKING(R1)
+    JMP     +!noMarkerCleanup
+!clean3x:                               ; post-roll-right: CLR LEFT (source) + BELOW (reservation)
+    MOV     R0, R1
+    AI      R1, TILE_LEFT
+    CLR     @LEVEL_WORKING(R1)
+    MOV     R0, R1
+    AI      R1, TILE_BELOW
+    CLR     @LEVEL_WORKING(R1)
+    JMP     +!noMarkerCleanup
+!clean5x:                               ; pre-roll-left: CLR LEFT (path marker >8888)
+    MOV     R0, R1
+    AI      R1, TILE_LEFT
+    CLR     @LEVEL_WORKING(R1)
+    JMP     +!noMarkerCleanup
+!clean6x:                               ; pre-roll-right: CLR RIGHT (path marker >8888)
+    MOV     R0, R1
+    AI      R1, TILE_RIGHT
+    CLR     @LEVEL_WORKING(R1)
+!noMarkerCleanup:
+    POP     R1                          ; restore caller's newTile:newState
+    ANDI    R3, >FF00                   ; Keep tile ID (high byte), clear state (low byte)
+
+    ; Check for orange disk, yellow disk, or snik-snak
+    CI      R3, TYPE_DISK_ORANGE << 8
+    JEQ     +!setTimer
+    CI      R3, TYPE_DISK_YELLOW << 8
+    JEQ     +!setTimer
+    CI      R3, TYPE_SNIK_SNAK << 8
+    JEQ     +!setTimer
+
+    ; Check for electron
+    CI      R3, TYPE_ELECTRON << 8
+    JNE     +!notElectron
+
+    ; Electron - negate timer and change to infotron explosion
+    NEG     R2
+    LI      R1, (TYPE_EXPLOSION << 8) | >80 ; infotron explosion state
+    JMP     +!setTimer
+
+!notElectron:
+    ; Check for Murphy
+    CI      R3, TYPE_MURPHY << 8
+    JNE     +!notMurphy
+
+    SETO    @SHOULD_KILL_MURPHY
+    JMP     +!setTimer
+
+!notMurphy:
+    ; Default case - check if not hardware, then set tile (NO timer)
+    CI      R3, >0600                   ; TYPE_WALL (hardware) = 0x06
+    JEQ     +!done
+
+    ; Set tile to explosion (but don't add timer - only reactive tiles get timers)
+    MOV     R0, R3
+    MOV     R1, @LEVEL_WORKING(R3)      ; write explosion tile to position
+    JMP     +!done                      ; Skip timer - non-reactive tiles just become explosions
+
+!setTimer:
+    ; Set tile to explosion first
+    PUSH    R0
+    MOV     R0, R3
+    MOV     R1, @LEVEL_WORKING(R3)      ; write explosion tile to position
+    POP     R0
+
+    ; Add to explosion timer pool
+    PUSH    R1                          ; R0 already has position
+    MOV     R2, R1                      ; timer value
+    CALL    @AddExplosionTimer
+    POP     R1
+
+!done:
+    RET
+
+; =============================================================================
+; TIMER POOL MANAGEMENT
+; =============================================================================
+
+; Add explosion timer to circular queue
+; Input: R0 = position, R1 = timer value (negative = electron type)
+AddExplosionTimer:
+    ; Check if queue full: (tail + 1) & 15 == head
+    MOV     @EXPL_TIMER_TAIL, R2
+    MOV     R2, R3
+    INC     R3
+    ANDI    R3, EXPL_TIMER_MASK
+    C       R3, @EXPL_TIMER_HEAD
+    JEQ     +!poolFull
+
+    ; Compute entry pointer: EXPL_TIMER_POOL + tail * 4
+    SLA     R2, 2
+    AI      R2, EXPL_TIMER_POOL
+
+    ; Write position
+    MOV     R0, *R2
+
+    ; Compute fire_frame = (frame_counter_low + 13) & 0xFF
+    CLR     R3
+    MOVB    @FRAME_COUNTER + 1, R3      ; R3 high byte = frame_counter_low
+    AI      R3, EXPL_FUSE_FRAMES << 8   ; + fuse frames (in high byte position)
+    MOVB    R3, @2(R2)
+
+    ; Type: 0 = regular, 1 = electron (from sign of timer)
+    LI      R3, >0100                   ; assume electron
+    MOV     R1, R1                      ; set status flags
+    JLT     +!storeType                 ; R1 < 0: electron, keep type = 1
+    CLR     R3                          ; R1 >= 0: regular, type = 0
+
+!storeType:
+    MOVB    R3, @3(R2)
+
+    ; Advance tail
+    MOV     @EXPL_TIMER_TAIL, R2
+    INC     R2
+    ANDI    R2, EXPL_TIMER_MASK
+    MOV     R2, @EXPL_TIMER_TAIL
+    RET
+
+!poolFull:
+    ; Queue full - evict oldest (head) entry to make room, then add new entry
+    PUSH    R0                          ; save new position
+    PUSH    R1                          ; save new timer value
+
+    ; Load head entry
+    MOV     @EXPL_TIMER_HEAD, R2
+    MOV     R2, R3
+    SLA     R3, 2
+    AI      R3, EXPL_TIMER_POOL         ; R3 = head entry ptr
+
+    MOV     *R3, R0                     ; R0 = evicted position
+    CLR     R1
+    MOVB    @3(R3), R1                  ; R1 high byte = evicted type (0=regular, 1=electron)
+
+    ; Advance head (free the slot)
+    INC     R2
+    ANDI    R2, EXPL_TIMER_MASK
+    MOV     R2, @EXPL_TIMER_HEAD
+
+    ; Detonate evicted entry based on type
+    CI      R1, >0100                   ; electron type?
+    JNE     +!evictRegular
+    CALL    @DetonateBigExplosionElectron ; known electron - bypass tile read
+    JMP     +!evictDone
+
+!evictRegular:
+    CALL    @DetonateBigExplosion       ; R0 = evicted position
+
+!evictDone:
+    ; Restore new entry params and retry (pool now has a free slot)
+    POP     R1
+    POP     R0
+    JMP     AddExplosionTimer           ; retry - pool has room now
+
+; Play explosion sound (stub)
+PlayExplosionSound:
+    RET
+
+; =============================================================================
+; EXPLOSION ANIMATION FRAME DATA
+; =============================================================================
+; Format: word entries - high byte = pattern index, low byte = attribute
+; TODO: Replace placeholder values with actual explosion tile patterns
+
+REGULAR_EXPLOSION_FRAMES:
+    DATA    TILE_ATTR_BLANK             ; Frame XXX
+    DATA    TILE_ATTR_BLANK             ; Frame 7
+    DATA    >0E04                       ; Frame 6
+    DATA    >0D04                       ; Frame 5
+    DATA    >0C04                       ; Frame 4
+    DATA    >0B04                       ; Frame 3
+    DATA    >0A04                       ; Frame 2
+    DATA    >0904                       ; Frame 1
+    DATA    >0804                       ; Frame 0
+
+INFOTRON_EXPLOSION_FRAMES:
+    DATA    >0804                       ; Frame 0
+    DATA    >0904                       ; Frame 1
+    DATA    >0A04                       ; Frame 2
+    DATA    >0B04                       ; Frame 3
+    DATA    >0C04                       ; Frame 4
+    DATA    >0D04                       ; Frame 5
+    DATA    >8D04                       ; Frame 6
+    DATA    >8D04                       ; Frame 7

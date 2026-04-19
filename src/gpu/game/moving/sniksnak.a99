@@ -1,0 +1,156 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; ENTRY POINT
+; =============================================================================
+
+UpdateSnikSnak:
+    LI      R0, SNIKSNAK_CONFIG
+    B       @UpdateEnemy
+
+; =============================================================================
+; CONFIGURATION
+; =============================================================================
+
+SNIKSNAK_CONFIG:
+    DATA    TYPE_SNIK_SNAK << 8         ; Enemy ID, flags
+    DATA    >0000                       ; RFixed tile Id (snik is animated)
+    DATA    +!getSnikSpriteData         ; Sprite lookup function
+
+; =============================================================================
+; getSnikSpriteData
+; -----------------------------------------------------------------------------
+; Look up sprite data for snik-snak animation frame
+;
+; Input:  R3 = state byte (direction * 8 + frame, range 0-47)
+;              bits 3-5 = direction (0-5), bits 0-2 = frame (0-7)
+; Output: R2 = pattern:attributes (high byte = pattern, low byte = attributes)
+; Modifies: R2, R5
+;
+; Table format: Each byte encodes pattern with flip flags in low 2 bits
+;               VDP ignores low 2 bits of pattern in 16x16 mode
+; =============================================================================
+
+!getSnikSpriteData:
+    CLR     R2
+    MOVB    @SNIK_FRAMES(R3), R2        ; R2 = >PP00 (pattern in high byte)
+
+    ; Extract flip bits and convert to attribute format
+    ; Pattern byte: bits 7-2 = pattern, bit 1 = H flip, bit 0 = V flip
+    ; Attribute byte: bit 6 = FlipX, bit 5 = FlipY
+    MOV     R2, R5
+    SLA     R5, 6                       ; Flip bits now in bits 15-14
+    SRL     R5, 9                       ; Flip bits now in bits 6-5 of low byte
+    SOC     R5, R2                      ; R2 = >PPAA (pattern:attributes)
+    RT
+
+; =============================================================================
+; CONSTANTS
+; =============================================================================
+
+FLIP_V              EQU 1               ; Vertical flip flag
+FLIP_H              EQU 2               ; Horizontal flip flag
+
+; =============================================================================
+; MACROS
+; =============================================================================
+
+; Tile ID for static snik-snak (maps to LEVEL_MAP)
+  .defm sniktile
+    BYTE    #1
+  .endm
+
+; Sprite pattern with flip flags embedded in low 2 bits
+; Arg 1: base pattern (must be multiple of 4)
+; Arg 2: flip flags (0, FLIP_V, FLIP_H, or FLIP_V|FLIP_H)
+  .defm sniksprite
+    BYTE    ((#1 & >fc) | #2
+  .endm
+
+; =============================================================================
+; ANIMATION DATA
+; -----------------------------------------------------------------------------
+; Dual-purpose lookup table:
+;   - Entries 0-15:  Static tile IDs for rotating snik-snak (not moving)
+;   - Entries 16-47: Sprite patterns for moving snik-snak
+; =============================================================================
+
+SNIK_FRAMES:
+
+; -----------------------------------------------------------------------------
+; Static tiles (entries 0-15) - tile IDs mapped via LEVEL_MAP
+; -----------------------------------------------------------------------------
+
+    ; Rotate left (entries 0-7)
+  .sniktile >35                         ; UP
+  .sniktile >36                         ; UP-LEFT
+  .sniktile >34                         ; LEFT
+  .sniktile >90                         ; DOWN-LEFT
+  .sniktile >91                         ; DOWN
+  .sniktile >92                         ; DOWN-RIGHT
+  .sniktile >93                         ; RIGHT
+  .sniktile >94                         ; UP-RIGHT
+
+    ; Rotate right (entries 8-15)
+  .sniktile >35                         ; UP
+  .sniktile >94                         ; UP-RIGHT
+  .sniktile >93                         ; RIGHT
+  .sniktile >92                         ; DOWN-RIGHT
+  .sniktile >91                         ; DOWN
+  .sniktile >90                         ; DOWN-LEFT
+  .sniktile >34                         ; LEFT
+  .sniktile >36                         ; UP-LEFT
+
+; -----------------------------------------------------------------------------
+; Sprite patterns (entries 16-47) - pattern + flip flags
+; -----------------------------------------------------------------------------
+
+    ; Move up (entries 16-23)
+  .sniksprite 212, 0                    ; Frame 0
+  .sniksprite 212, 0                    ; Frame 1
+  .sniksprite 212, 0                    ; Frame 2
+  .sniksprite 224, 0                    ; Frame 3 (medium)
+  .sniksprite 224, 0                    ; Frame 4 (medium)
+  .sniksprite 228, 0                    ; Frame 5 (wide)
+  .sniksprite 228, 0                    ; Frame 6 (wide)
+  .sniksprite 224, 0                    ; Frame 7 (medium)
+
+    ; Move left (entries 24-31)
+  .sniksprite 208, 0                    ; Frame 0
+  .sniksprite 232, 0                    ; Frame 1 (small)
+  .sniksprite 232, 0                    ; Frame 2 (medium)
+  .sniksprite 236, 0                    ; Frame 3 (wide)
+  .sniksprite 236, 0                    ; Frame 4 (wide)
+  .sniksprite 232, 0                    ; Frame 5 (medium)
+  .sniksprite 232, 0                    ; Frame 6 (small)
+  .sniksprite 208, 0                    ; Frame 7
+
+    ; Move down (entries 32-39) - vertical flip of "move up"
+  .sniksprite 212, FLIP_V               ; Frame 0
+  .sniksprite 212, FLIP_V               ; Frame 1
+  .sniksprite 212, FLIP_V               ; Frame 2
+  .sniksprite 224, FLIP_V               ; Frame 3 (medium)
+  .sniksprite 224, FLIP_V               ; Frame 4 (medium)
+  .sniksprite 228, FLIP_V               ; Frame 5 (wide)
+  .sniksprite 228, FLIP_V               ; Frame 6 (wide)
+  .sniksprite 224, FLIP_V               ; Frame 7 (medium)
+
+    ; Move right (entries 40-47) - horizontal flip of "move left"
+  .sniksprite 208, FLIP_H               ; Frame 0
+  .sniksprite 232, FLIP_H               ; Frame 1 (small)
+  .sniksprite 232, FLIP_H               ; Frame 2 (medium)
+  .sniksprite 236, FLIP_H               ; Frame 3 (wide)
+  .sniksprite 236, FLIP_H               ; Frame 4 (wide)
+  .sniksprite 232, FLIP_H               ; Frame 5 (medium)
+  .sniksprite 232, FLIP_H               ; Frame 6 (small)
+  .sniksprite 208, FLIP_H               ; Frame 7

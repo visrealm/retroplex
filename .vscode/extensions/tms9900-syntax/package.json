@@ -1,0 +1,43 @@
+{
+  "name": "tms9900-syntax",
+  "displayName": "TMS9900 Assembly Syntax",
+  "description": "Syntax highlighting for TMS9900/TI-99/4A assembly language",
+  "version": "0.1.5",
+  "publisher": "visrealm",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "tms9900-asm",
+        "aliases": ["TMS9900 Assembly", "tms9900"],
+        "extensions": [".a99", ".asm"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tms9900-asm",
+        "scopeName": "source.asm.tms9900",
+        "path": "./syntaxes/tms9900.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": "keyword.todo.tms9900",
+            "settings": {
+              "foreground": "#FF8C00",
+              "fontStyle": "bold"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,167 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; RenderTile - Render a single tile at given source position
+; Uses helper variables set by SetupScrollContext
+; Input: R0 = srcX (absolute level X coordinate, 0-59)
+;        R1 = srcY (absolute level Y coordinate, 0-23)
+;        R5 = tile override (if non-zero)
+; Modifies: R2-R10
+;
+RenderTile:
+    ; Check if tile is in visible range
+    C       R0, @SCROLL_MIN_X
+    JL      +!done                      ; srcX < min, not visible
+    C       R0, @SCROLL_MAX_X
+    JGT     +!done                      ; srcX > max, not visible
+    C       R1, @SCROLL_MIN_Y
+    JL      +!done                      ; srcY < min, not visible
+    C       R1, @SCROLL_MAX_Y
+    JGT     +!done                      ; srcY > max, not visible
+
+    ; Compute source tile address: LEVEL_WORKING + srcY*128 + srcX*2
+    ; offset = (srcY << 7) + (srcX << 1) + $9000
+    MOV     R5, R5
+    JNE     +!haveTile
+    MOV     R1, R2
+    SLA     R2, 7                       ; srcY * 128 (power of 2)
+    MOV     R0, R3
+    SLA     R3, 1                       ; srcX * 2
+    A       R3, R2                      ; + srcX*2
+
+    ; Read tile ID from 2-byte structure (tile ID is byte 0, state is byte 1)
+    MOV     @LEVEL_WORKING(R2), R4      ; R4 = tile:state word
+
+    ; Check for hardware/chip variants that store original ID in state
+    ANDI    R4, >FF00                   ; isolate tile ID in high byte (clear state byte)
+    CI      R4, TYPE_RAM_CHIP << 8      ; is it ram chip (5)?
+    JEQ     +!isVariant
+    CI      R4, TYPE_WALL << 8          ; is it wall (6)?
+    JNE     +!notVariant
+!isVariant:
+    MOV     @LEVEL_WORKING(R2), R4      ; reload full word
+    SLA     R4, 8
+
+!notVariant:
+    CI      R4, 54 << 8                 ; tile out of bounds, skip it - TILE COUNT
+    JLE     +!tileIdOk
+    CLR     R4                          ; out of bounds (special) render empty
+!tileIdOk:
+    SRL     R4, 8                       ; grab msb and..
+    SLA     R4, 1                       ; * 2 (2 bytes per map entry)
+    MOV     @LEVEL_MAP(R4), R5          ; R5 = pattern (MSB) | attribute (LSB)
+
+!haveTile:
+    ; Calculate name table position using ABSOLUTE source coordinates
+    ; hardwareX = srcX * 2, hardwareY = srcY * 2
+    MOV     R0, R7
+    SLA     R7, 1                       ; hardwareX = srcX * 2
+    MOV     R1, R8
+    SLA     R8, 1                       ; hardwareY = srcY * 2
+
+    ; column = hardwareX & 31 (bits 0-4)
+    MOV     R7, R3
+    ANDI    R3, >1f                     ; column (0-31)
+
+    ; page = (hardwareX >> 5) & 1 (bit 5)
+    MOV     R7, R2
+    SRL     R2, 5                       ; shift right 5 bits
+    ANDI    R2, 1                       ; mask to bit 0 (gives 0 or 1)
+    JEQ     +!calcRow                   ; if not, use page 0
+    LI      R2, >0400                   ; page 1
+
+!calcRow:
+
+    ; Select name/color table based on page bit
+    MOV     R2, R9
+    ; row = hardwareY % 24 (wrapping for vertical scroll)
+    ; Since max hardwareY is 46 (23 tiles * 2), we only need to wrap once
+    MOV     R8, R2
+    CI      R2, 24
+    JL      +!calcOffset
+    AI      R2, -24
+
+!calcOffset:
+    ; offset = row * 32 + column
+    SLA     R2, 5                       ; row * 32
+    A       R3, R2                      ; + column → R2 = offset
+
+    ; Write 4 name table entries (TL, BL, TR, BR = base+0, +1, +2, +3)
+    A       R2, R9                      ; R1 = color table base + offset (TL position)        
+
+    ; NOW check advanced tile bit and branch
+    MOV     R5, R5                      ; test R5 to set status bits
+    JLT     +!advancedTile              ; if negative (bit 15 set), handle advanced tile
+
+    ; Extract pattern base index (bits 0-6 of MSB) and multiply by 4
+    MOV     R5, R6
+    SRL     R6, 8
+    SLA     R6, 10
+
+    MOV     R6, R2
+    SWPB    R2
+    INCT    R2
+    SOC     R2, R6
+
+    MOV     R6, @NAME_TABLE(R9)         ; write TL (base+0), R1 now points to TR
+    AI      R6, >0101                   ; base+0x101
+    MOV     R6, @NAME_TABLE_NEXT(R9)    ; write TL (base+0), R1 now points to TR
+
+    ; Extract attribute byte (LSB of R5)
+    SZCB    R5, R5                      ; get attribute to high byte for writing
+    MOV     R5, R2
+    SWPB    R2
+    SOC     R2, R5
+
+    ; Write 4 color table entries (all same attribute)
+    MOV     R5, @COLOR_TABLE(R9)        ; write TRA
+    MOV     R5, @COLOR_TABLE_NEXT(R9)   ; write BLA, R3 now points to BRA
+
+!done:
+    RET
+
+; =============================================================================
+; advancedTile - Handle advanced tile rendering
+; R5 = pattern (MSB) | attribute (LSB), bit 15 set
+; R2 = offset, R7/R8 = destX/destY, R9 = color table, R10 = name table
+; Data format: TL, BL, TR, BR, TLA, BLA, TRA, BRA (names then colors)
+;
+!advancedTile:
+    ; Extract advanced tile index (bits 0-6 of MSB)
+    MOV     R5, R4
+    SLA     R4, 3                       ; multiply MSB by 8, move to LSB
+    SRL     R4, 8
+    AI      R4, ADV_TILE_MAP            ; R4 = pointer to advanced tile data
+
+    MOV     *R4+, @NAME_TABLE(R9)       ; write TL, TR
+    MOV     *R4+, @NAME_TABLE_NEXT(R9)  ; write TL, TR
+
+    ; Write 4 color table entries (TLA, TRA, TLA, BRA)
+    MOV     *R4+, @COLOR_TABLE(R9)      ; write TL, TR
+    MOV     *R4, @COLOR_TABLE_NEXT(R9)  ; write TL, TR
+
+    RET
+
+; Tile rendering
+; -----------------------------------------------------------------------------
+
+; R5 - Tile definition
+; R12 - position
+RenderTempTile:
+    MOV     R12, R1                     ; get tile position
+RenderTempTileR1:
+    SRL     R1, 1                       ; div by two because LEVEL_WORKING is words
+    MOV     R1, R0                      ; get XPOS
+    ANDI    R0, >003f
+    SRL     R1, 6                       ; get YPOS
+    JMP     RenderTile

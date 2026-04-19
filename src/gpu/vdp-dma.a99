@@ -1,0 +1,26 @@
+; VDP DMA Helper for PICO9918
+; GPU-side routine to perform VRAM-to-VRAM DMA transfers
+;
+; Entry point: gpuDmaCopy
+; CPU writes parameters to >2F00->2F07, then triggers this routine
+; GPU reads params, sets up DMA, polls for completion, returns (idles)
+
+DMA_SRC             EQU >8000           ; DMA register addresses
+
+PARAM_BLOCK         EQU >2F00           ; Parameter block in low VRAM (CPU-writable)
+
+; Entry point for DMA copy operation
+; Reads parameters from >2F00->2F07 and performs DMA transfer
+gpuDmaCopy:
+    ; Copy 8 bytes (4 words) from param block to DMA registers
+    ; Using indirect addressing with auto-increment for efficiency
+    LI      R0, PARAM_BLOCK
+    LI      R1, DMA_SRC
+    MOV     *R0+, *R1+                  ; Copy word 0 (src addr)
+    MOV     *R0+, *R1+                  ; Copy word 1 (dst addr)
+    MOV     *R0+, *R1+                  ; Copy word 2 (width/height)
+    MOV     *R0+, *R1+                  ; Copy word 3 (stride/params)
+
+    ; Trigger DMA by writing all 1s to >8008 (R1 now points here)
+    SETO    *R1
+    IDLE

@@ -1,0 +1,59 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+SCALE_FACTOR        EQU >3EFE           ; caller writes 0..16 here (word)
+
+SRC_PALETTE         EQU >2F80
+DST_PALETTE         EQU >5000           ; VDP Palette address in VRAM
+COUNT               EQU 64
+
+    AORG    >3F00
+
+ScalePalette64:
+    LI      R1, SRC_PALETTE             ; source ptr
+    LI      R2, DST_PALETTE             ; dest ptr
+    MOV     @SCALE_FACTOR, R4           ; load scale (0..16) from memory
+    ANDI    R4, >001F                   ; clamp to 0..16
+    LI      R3, COUNT                   ; words to process
+
+.loop:
+    MOV     *R1+, R12                   ; R12 = source word (preserve it)
+
+    ; scale nibble at bits 8-11
+    MOV     R12, R6
+    SRL     R6, 8
+    ANDI    R6, >000F
+    MPY     R4, R6
+    SRL     R7, 4
+    SLA     R7, 8
+    MOV     R7, R10
+
+    ; scale nibble at bits 4-7
+    MOV     R12, R6
+    SRL     R6, 4
+    ANDI    R6, >000F
+    MPY     R4, R6
+    ANDI    R7, >00F0
+    SOC     R7, R10
+
+    ; scale nibble at bits 0-3
+    MOV     R12, R6
+    ANDI    R6, >000F
+    MPY     R4, R6
+    SRL     R7, 4
+    SOC     R7, R10
+
+    MOV     R10, *R2+                   ; store to destination
+
+    DEC     R3
+    JNE     .loop
+    IDLE

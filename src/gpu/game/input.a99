@@ -1,0 +1,46 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+HandleInput:
+    ; TODO: could check if @USER_INPUT is zero and bail..
+    CLR     @LEFT_PRESSED
+    CLR     @UP_PRESSED
+    MOVB    @USER_INPUT, R0
+    LI      R1, INPUT_UP << 8
+    SZCB    R0, R1
+    JNE     +!afterUp
+    ;DECT    @SCROLL_Y
+    SOCB    R0, @UP_PRESSED
+!afterUp:
+
+    LI      R1, INPUT_DOWN << 8
+    SZCB    R0, R1
+    JNE     +!afterDown
+    ;INCT    @SCROLL_Y
+    SOCB    R0, @DOWN_PRESSED
+!afterDown:
+
+    LI      R1, INPUT_LEFT << 8
+    SZCB    R0, R1
+    JNE     +!afterLeft
+    ;DECT    @SCROLL_X
+    SOCB    R0, @LEFT_PRESSED
+!afterLeft:
+
+    LI      R1, INPUT_RIGHT << 8
+    SZCB    R0, R1
+    JNE     +!afterRight
+    ;INCT    @SCROLL_X
+    SOCB    R0, @RIGHT_PRESSED
+!afterRight:
+
+    RET

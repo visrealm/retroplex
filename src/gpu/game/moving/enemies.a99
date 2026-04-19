@@ -1,0 +1,315 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+UpdateEnemy:
+    CB      *R0, R14
+    JEQ     +!validTileId
+    RT
+
+!validTileId:
+    MOV     *R0+, @CURRENT_ENEMY_ID
+    MOV     *R0+, @CURRENT_ENEMY_TILE
+    MOV     *R0+, @CURRENT_SPRITE_FN
+    MOV     R14, R2
+    ANDI    R2, >70
+    JNE     updateEnemyMoving           ; it 4 set, we're moving
+    ; flow on through to turning
+
+; turning enemy pseudocode
+; value = frame % 3
+; if value == 0:
+;   render new frame
+;   increment and mask state to 0x07 OR with 0x08 if turning right
+; else if value == 3
+;   if state & 0x1 return
+;   if state == 0 (turned from right to up)
+;      if aboveTile is empty
+;        set it to snik state: 0x10
+;        change us to 0xBB status 0x1
+;        return
+;      else if murphy - bigExplode here
+updateEnemyTurning:
+    MOV     @FRAME_COUNTER, R2
+    ANDI    R2, >0003                   ; R2 = lower 2 bits (0-3) of frame counter
+    JEQ     +!newEnemyFrame             ; 0? render new frame
+    CI      R2, >0003                   ; 3? check for new state
+    JEQ     +!updateEnemyTurnState
+    RT
+
+!newEnemyFrame:
+    MOV     R14, R2                     ; get tileid and state
+    SZCB    R2, R2                      ; clear MSB (clear tileId)
+    ANDI    R2, >0f                     ; Get lower 3 bits (frame 0-7)
+
+    MOV     @CURRENT_ENEMY_TILE, R5
+    JNE     +!fixedFrame
+    MOVB    @SNIK_FRAMES(R2), R5        ; load current tile Id
+!fixedFrame:
+
+    CALL    @RenderTempTile
+
+    ; render it, then...
+    MOV     R14, R2                     ; get tileid and state
+    SZCB    R2, R2                      ; clear MSB (clear tileId)
+    INC     R2                          ; increment status
+    ANDI    R2, >07                     ; mask it
+    ANDI    R14, >ff08
+    SOC     R2, R14
+    MOV     R14, @LEVEL_WORKING(R12)    ; write it to LEVEL_DATA
+    RT
+
+!updateEnemyTurnState:
+    MOV     R14, R2                     ; get tileid and state
+    SRL     R2, 1                       ; test the LSB and divide by 2
+    JOC     +!done                      ; odd state, let's bail
+
+    ANDI    R2, >7
+    SLA     R2, 1                       ; multiply by 2
+    MOV     @ENEMY_LOGIC_TILE(R2), R3   ; R3 contains offset to "next"
+    A       R12, R3                     ; R3 contains next location
+    MOVB    @LEVEL_WORKING(R3), R1      ; grab "next" tile and state
+    JNE     +!done
+
+    MOV     @ENEMY_LOGIC_STATE(R2), R1  ; R1 contains state and "next" state
+    MOV     R1, R2
+    MOVB    @CURRENT_ENEMY_ID, R2       ; grab next tile status
+    MOV     R2, @LEVEL_WORKING(R3)      ; write state and tile-id to "next" cell
+    SRL     R1, 8
+
+    PUSH    R12
+    MOV     R3, R12
+    LI      R5, TILE_ATTR_BLANK         ; render blank at destination (sprite handles visual)
+    CALL    @RenderTempTile
+    POP     R12
+
+    ORI     R1, >BB00
+    MOV     R1, @LEVEL_WORKING(R12)     ; Update our state
+    ; Don't blank source tile here - let it persist one extra frame
+    ; updateEnemyMoving will blank it when the sprite takes over
+
+!done:
+    RT
+
+; enemy move logic:
+; frame = state. subtract 15 from frame (if up), suibtract 0x20 if down
+; draw sprite
+; if frame == 7
+;    if oldTile != explode
+;       oldFile = space
+; if frame < 8
+;    frame += u:0x10 l:0x18  d:0x20  r:0x28
+;    state = frame
+;    return
+;  state = 0
+;  tile = snik
+;  if (leftToMe) is empty OR murphy
+;    state = turningLeftState (u:1 , l:3, d:5, r:7)
+;    return
+;  if (aheadTile) is empty
+;    tile = 0xBB
+;    state = traveDirectionState
+;    aheadTileState = u:0x10 l:0x18  d:0x20  r:0x28
+;    aheadTile = snik
+;    return
+;  if (aheadTile) is mutrphy
+;    big explode here
+;    return
+;  if (rightToMe) is empty or murphy
+;    state = turningRightState (u:0x9 , l:0xf, d:0xd, r:0xB)
+;    return
+;  state = turningLeftState (u:1 , l:3, d:5, r:7)
+;  
+
+; DO NOT TOUCH: R12, R13
+; R12 = current tile location in LEVEL_WORKING table
+; R14 = Current tile ID and status
+updateEnemyMoving:
+
+    MOV     R14, R2
+    SZCB    R2, R2                      ; R2 contains current state in LSB
+    MOV     R2, R3                      ; R2 and R3 contain state only in LSB
+    MOV     R3, R4                      ; R4 = save original state for sprite calc
+    SRL     R2, 3                       ; direction: 0=rotL, 1=rotR, 2=U, 3=L, 4=D, 5=R
+    DECT    R2                          ; Now, 0-3 range for ULDR
+    SLA     R2, 1                       ; multiply by 2 (words) (0, 2, 4, 6)
+
+    SZC     @ENEMY_MOVE_INVMASK(R2), R3 ; Mask
+    A       @ENEMY_MOVE_ADD(R2), R3     ; subtract (add) direction-specific amount
+
+    ; Register sprite for smooth inter-tile movement
+    ; R2 = direction (0, 2, 4, 6 for ULDR), R4 = original state (for frame calc)
+    PUSH    R2
+    PUSH    R3
+    PUSH    R12
+    MOV     R4, R3                      ; Use original state for position calc
+    CALL    @CalcSpritePos              ; R0 = screenX, R1 = screenY
+
+    ; Get sprite pattern:attributes via function pointer
+    MOV     @CURRENT_SPRITE_FN, R4
+    PUSH    R11
+    BL      *R4                         ; R2 = pattern:attributes
+    POP     R11
+    CALL    @RegisterSprite             ; R0=X, R1=Y, R2=pattern:attributes
+    POP     R12
+    POP     R3
+    POP     R2
+
+    ; Render blank at behind/source tile first (while R2 is still valid)
+    ; Then blank current position. Cleans up turn tile persisting from transition.
+    PUSH    R2
+    PUSH    R3
+    MOV     R12, R6
+    A       @ENEMY_BEHIND_OFFSET(R2), R6
+    PUSH    R12
+    MOV     R6, R12
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile             ; blank behind/source position
+    POP     R12
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile             ; blank current/destination position
+    POP     R3
+    POP     R2
+
+    CI      R3, 7
+    JNE     +!afterExplTest
+
+    ; TODO: Test for next tile exploding here
+
+    MOV     R12, R6
+    A       @ENEMY_BEHIND_OFFSET(R2), R6
+    CLR     @LEVEL_WORKING(R6)          ; set prev tile to empty/space
+
+!afterExplTest:
+    CI      R3, 8
+    JHE     +!gt8
+
+    A       @ENEMY_MOVE_FRAME_ADD(R2), R3 ; Add direction-specific amount to state
+    SWPB    R3
+    MOVB    R3, @STATUS_WORKING(R12)
+
+    RT
+
+!GT8:
+    MOV     @CURRENT_ENEMY_ID, @LEVEL_WORKING(R12)
+
+    MOV     R12, R6
+    A       @ENEMY_LEFT_OFFSET(R2), R6
+    MOV     @LEVEL_WORKING(R6), R6
+    JNE     +!leftOccupied
+
+!goingLeft:
+    MOVB    @ENEMY_NEXT_STATE_LEFT(R2), R3
+    MOVB    R3, @STATUS_WORKING(R12)    ; update the state
+    RT
+
+!leftOccupied:
+
+    ; TODO: check if left is murphy
+
+    MOV     R12, R6
+    A       @ENEMY_AHEAD_OFFSET(R2), R6
+    MOV     @LEVEL_WORKING(R6), R4
+    JNE     +!aheadOccupied
+
+    MOV     @ENEMY_MOVE_FRAME_ADD(R2), R4
+    SOC     @CURRENT_ENEMY_ID, R4
+    MOV     R4, @LEVEL_WORKING(R6)
+
+    MOV     R2, R4                      ; 0, 2, 4, 6
+    SRL     R4, 1                       ; 0, 1, 2, 3
+    INC     R4                          ; 1, 2, 3, 4
+    ORI     R4, >BB00
+    MOV     R4, @LEVEL_WORKING(R12)
+
+    PUSH    R6
+    LI      R5, TILE_ATTR_BLANK         ; render blank at current position
+    CALL    @RenderTempTile
+    POP     R6
+
+    PUSH    R12
+    MOV     R6, R12
+    LI      R5, TILE_ATTR_BLANK         ; render blank at ahead position (sprite handles visual)
+    CALL    @RenderTempTile
+    POP     R12
+
+    RT
+
+!aheadOccupied:
+
+    ; TODO: check if ahead is murphy
+
+    MOV     R12, R6
+    A       @ENEMY_RIGHT_OFFSET(R2), R6
+    MOV     @LEVEL_WORKING(R6), R6
+    JNE     -!goingLeft
+
+    MOVB    @ENEMY_NEXT_STATE_RIGHT(R2), R3
+    MOVB    R3, @STATUS_WORKING(R12)    ; update the state
+    RT
+
+ENEMY_MOVE_ADD:
+    DATA    -15
+    DATA    1
+    DATA    -31
+    DATA    1
+
+ENEMY_MOVE_INVMASK:
+    DATA    ~>FFFF                      ; SZC.. &= >FFFF
+    DATA    ~>0007                      ; SZC.. &= >0007
+    DATA    ~>FFFF                      ; SZC.. &= >FFFF
+    DATA    ~>0007                      ; SZC.. &= >0007
+
+ENEMY_MOVE_FRAME_ADD:
+    DATA    >10
+    DATA    >18
+    DATA    >20
+    DATA    >28
+
+; Tile offset to the left of a given direction (ULDR)
+ENEMY_LEFT_OFFSET:
+    DATA    TILE_LEFT
+ENEMY_BEHIND_OFFSET:
+    DATA    TILE_BELOW
+ENEMY_RIGHT_OFFSET:
+    DATA    TILE_RIGHT
+ENEMY_AHEAD_OFFSET:
+    DATA    TILE_ABOVE
+    DATA    TILE_LEFT
+    DATA    TILE_BELOW
+    DATA    TILE_RIGHT
+BUG_TEST_DIRECTIONS:
+    DATA    TILE_ABOVE                  ; continuation for ENEMY_LOGIC_TILE
+    DATA    TILE_RIGHT
+    DATA    TILE_BELOW
+    DATA    TILE_LEFT
+    DATA    TILE_ABOVE_LEFT
+    DATA    TILE_ABOVE_RIGHT
+    DATA    TILE_BELOW_LEFT
+    DATA    TILE_BELOW_RIGHT
+
+ENEMY_LOGIC_TILE    EQU ENEMY_AHEAD_OFFSET ; equivalent in location
+
+ENEMY_NEXT_STATE_LEFT:
+    DATA    >100, >300, >500, >700
+
+ENEMY_NEXT_STATE_RIGHT:
+    DATA    >900, >F00, >D00, >B00
+
+ENEMY_LOGIC_STATE:
+    DATA    >0110
+    DATA    >0218
+    DATA    >0320
+    DATA    >0428
+    DATA    >0110
+    DATA    >0428
+    DATA    >0320
+    DATA    >0218

@@ -1,0 +1,284 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; MURPHY SPRITE-BASED MOVEMENT
+; -----------------------------------------------------------------------------
+; Murphy is always rendered as a sprite with smooth cell-to-cell movement.
+; State machine: idle (0) or moving (direction*8 + frame)
+; Direction encoding: 1=Up, 2=Left, 3=Down, 4=Right (in bits 3-5)
+; CalcSpritePos uses: 0=U, 2=L, 4=D, 6=R -> convert with (dir-1)*2
+; =============================================================================
+
+; Direction state bases (direction << 3)
+MURPHY_DIR_UP       EQU >08             ; 1 << 3
+MURPHY_DIR_LEFT     EQU >10             ; 2 << 3
+MURPHY_DIR_DOWN     EQU >18             ; 3 << 3
+MURPHY_DIR_RIGHT    EQU >20             ; 4 << 3
+
+; Murphy sprite pattern (base pattern ID, CPU updates dynamically)
+MURPHY_PATTERN      EQU >B800           ; Pattern 184, no attributes
+
+; Movement direction table - 4 entries x 3 words each
+; Each entry: tile_offset (word), direction_state (word), facing_flag (word)
+; Facing flag: >FF = set FACING_LEFT, >00 = clear, >01 = don't modify
+; Order matches input flag layout: LEFT, RIGHT, UP, DOWN
+MURPHY_MOVE_TABLE:
+    DATA    TILE_LEFT, MURPHY_DIR_LEFT, >FF00 ; facing = set (non-zero)
+    DATA    TILE_RIGHT, MURPHY_DIR_RIGHT, >0000 ; facing = clear (zero)
+    DATA    TILE_ABOVE, MURPHY_DIR_UP, >0100 ; facing = don't modify
+    DATA    TILE_BELOW, MURPHY_DIR_DOWN, >0100 ; facing = don't modify
+
+; Valid tile types Murphy can enter (add new types before END label)
+MURPHY_VALID_TILES:
+    BYTE    TYPE_EMPTY
+    BYTE    TYPE_BASE
+    BYTE    TYPE_INFOTRON
+    BYTE    TYPE_DISK_RED
+MURPHY_VALID_TILES_END:
+
+; Kill tiles that trigger explosions
+MURPHY_KILL_TILES:
+    BYTE    TYPE_SNIK_SNAK
+    BYTE    TYPE_ELECTRON
+    BYTE    TYPE_BUG
+    BYTE    >FF                         ; Padding to make 4 bytes (no valid tile = 0xFF)
+MURPHY_KILL_TILES_END:
+
+; -----------------------------------------------------------------------------
+; GetMurphySpriteData - Get Murphy sprite pattern and attributes
+; Input:  (uses FACING_LEFT for flip)
+; Output: R2 = pattern:attributes (high byte = pattern, low byte = attributes)
+; Uses:   R2, R5
+; -----------------------------------------------------------------------------
+GetMurphySpriteData:
+    LI      R2, MURPHY_PATTERN          ; Pattern 184 (0xB8), no flip
+
+    ; Check facing direction for horizontal flip
+    MOVB    @FACING_LEFT, R5
+    JNE     +!noFlip
+    ORI     R2, >0040                   ; Set FlipX bit
+!noFlip:
+    RET
+
+; -----------------------------------------------------------------------------
+; UpdateMurphy - Main Murphy update routine (sprite-based state machine)
+; Called every game frame. Handles idle/moving states and sprite registration.
+; Modifies: R0-R7, R12
+; -----------------------------------------------------------------------------
+UpdateMurphy:
+    MOV     @MURPHY_MOVE_STATE, R2
+    JNE     +!moving                    ; state != 0, continue movement
+
+    ; === IDLE STATE: Check for input and potentially start movement ===
+    MOV     @MURPHY_CELL, R12
+
+    ; Data-driven input check (table order matches input flag layout)
+    LI      R5, LEFT_PRESSED            ; Input flags are consecutive bytes
+    LI      R6, MURPHY_MOVE_TABLE       ; Table pointer
+    LI      R7, 4                       ; 4 directions to check
+
+!checkLoop:
+    MOVB    *R5+, R0                    ; Read input flag (auto-increment)
+    JEQ     +!nextDir                   ; Not pressed, try next
+
+    ; Calculate target cell
+    MOV     R12, R1
+    A       *R6, R1                     ; Add tile offset from table
+
+    CLR     R0
+    MOVB    @LEVEL_WORKING(R1), R0      ; Get tile type in high byte of R0
+  .ifne KILL
+    LI      R2, MURPHY_KILL_TILES
+!killLoop:
+    CB      *R2+, R0                    ; Compare table byte with tile type
+    JEQ     +!kill                      ; Match found
+    CI      R2, MURPHY_KILL_TILES_END
+    JNE     -!killLoop                  ; More entries to check
+    JMP     +!checkValid
+
+!kill:
+    ; Bug is only deadly when zapping (state high bit clear); dormant = walk through
+    CI      R0, TYPE_BUG << 8
+    JNE     +!doKill
+    MOVB    @STATUS_WORKING(R1), R3     ; state byte into high byte of R3
+    JLT     +!valid                     ; high bit set = dormant, consume like base
+
+!doKill:
+    MOV     R1, R0                      ; R0 = position offset
+    CALL    @DetonateBigExplosion       ; Create 3x3 explosion
+    RET
+  .endif
+    ; Handle kill tile
+    ; (Add your kill tile handling code here)
+
+!checkValid:
+    LI      R2, MURPHY_VALID_TILES
+!validLoop:
+    CB      *R2+, R0                    ; Compare table byte with tile type
+    JEQ     +!valid                     ; Match found
+    CI      R2, MURPHY_VALID_TILES_END
+    JNE     -!validLoop                 ; More entries to check
+    JMP     +!nextDir
+!valid:
+    CI      R0, TYPE_INFOTRON << 8
+    JNE     +!notInfo
+    CALL    @DecInfotronCount
+!notInfo:
+    ; Can move! Load direction state
+    MOV     @2(R6), R2                  ; Load direction state from table
+
+    ; Handle facing flag (>FF=set, >00=clear, >01=don't modify)
+    CLR     R0
+    MOVB    @4(R6), R0                  ; Load facing flag to high byte
+    JGT     +!startMove                 ; Positive (>01) = don't modify facing
+    MOVB    R0, @FACING_LEFT            ; Set facing to >FF or >00
+    JMP     +!startMove
+
+!nextDir:
+    AI      R6, 6                       ; Next table entry (3 words)
+    DEC     R7
+    JNE     -!checkLoop
+
+    ; No input - render Murphy idle at current position
+    JMP     +!renderIdle
+
+; -----------------------------------------------------------------------------
+; StartMove - Begin movement to target cell
+; R1 = target cell, R2 = initial state, R12 = current cell
+; -----------------------------------------------------------------------------
+!startMove:
+    ; Save source cell for interpolation
+    MOV     R12, @MURPHY_SOURCE_CELL
+    ; Update MURPHY_CELL to destination
+    MOV     R1, @MURPHY_CELL
+    ; Save state
+    MOV     R2, @MURPHY_MOVE_STATE
+
+    ; Mark target cell as Murphy (prevents enemies entering)
+    PUSH    R11
+    LI      R0, TYPE_MURPHY << 8
+    MOV     R0, @LEVEL_WORKING(R1)
+
+    ; Update scroll FIRST so tile blanking uses correct scroll values
+    PUSH    R2                          ; Save state
+    PUSH    R12                         ; Save source cell
+    PUSH    R1                          ; Save destination cell
+    CALL    @ScrollToMurphy
+    CALL    @SetupScrollContext
+    POP     R1                          ; Restore destination
+    POP     R12                         ; Restore source
+    POP     R2                          ; Restore state
+
+    ; Blank source tile only (destination stays visible until Murphy arrives)
+    PUSH    R2                          ; Save state for !moving
+    LI      R5, TILE_ATTR_BLANK         ; Empty/blank tile
+    CALL    @RenderTempTile             ; R12 = source
+    POP     R2                          ; Restore state for !moving
+
+    POP     R11
+
+    ; Fall through to render moving sprite
+
+; -----------------------------------------------------------------------------
+; Moving state - Continue animation and render sprite
+; R2 = state (direction << 3 | frame)
+; -----------------------------------------------------------------------------
+!moving:
+    ; Extract frame and direction
+    MOV     R2, R3
+    ANDI    R3, >0007                   ; frame (0-7)
+    MOV     R2, R4
+    SRL     R4, 3                       ; direction code (1-4)
+    DEC     R4                          ; Convert to 0-3
+    SLA     R4, 1                       ; Convert to 0,2,4,6 for CalcSpritePos
+
+    ; Calculate sprite position (CalcSpritePos uses DESTINATION and offsets back)
+    PUSH    R11
+    PUSH    R2
+    PUSH    R3
+    MOV     @MURPHY_CELL, R12           ; Use DESTINATION cell for position calc
+    MOV     R4, R2                      ; direction for CalcSpritePos
+    MOV     R3, R4                      ; frame for CalcSpritePos
+    CALL    @CalcSpritePos              ; R0 = screenX, R1 = screenY
+
+    ; Get Murphy sprite pattern:attributes
+    CALL    @GetMurphySpriteData        ; R2 = pattern:attributes
+    CALL    @RegisterSprite
+    POP     R3
+    POP     R2
+    POP     R11
+
+    ; Update tile index for CPU
+    SWPB    R3
+    MOVB    R3, @MURPHY_TILE_INDEX
+
+    ; Increment frame
+    MOV     R2, R3
+    ANDI    R3, >0007                   ; Extract current frame
+    INC     R3
+    CI      R3, 8
+    JL      +!notDone
+
+    ; Movement complete at frame 8
+    PUSH    R11
+
+    ; Clear source cell in LEVEL_WORKING (no longer occupied)
+    MOV     @MURPHY_SOURCE_CELL, R12
+    CLR     @LEVEL_WORKING(R12)
+
+    CLR     @MURPHY_MOVE_STATE          ; Reset to idle
+    POP     R11
+    RET
+
+!notDone:
+    ; Update state with new frame
+    ANDI    R2, >FFF8                   ; Clear old frame bits
+    SOC     R3, R2                      ; Set new frame
+    MOV     R2, @MURPHY_MOVE_STATE
+    RET
+
+; -----------------------------------------------------------------------------
+; RenderIdle - Render Murphy as sprite at current cell (no movement)
+; -----------------------------------------------------------------------------
+!renderIdle:
+    PUSH    R11
+    MOV     @MURPHY_CELL, R12
+
+    ; Blank the tile under Murphy (needed for initial level state)
+    PUSH    R12
+    LI      R5, TILE_ATTR_BLANK         ; Empty/blank tile
+    CALL    @RenderTempTile
+    POP     R12
+
+    ; Calculate screen position (no offset for idle)
+    MOV     R12, R0
+    SRL     R0, 1                       ; word to byte offset
+    MOV     R0, R1
+    ANDI    R0, >003F                   ; X = offset & 63
+    SRL     R1, 6                       ; Y = offset >> 6
+    SLA     R0, 4                       ; X * 16 pixels
+    SLA     R1, 4                       ; Y * 16 pixels
+    S       @I_SCROLL_X, R0             ; subtract scroll
+    S       @I_SCROLL_Y, R1
+    DEC     R1                          ; sprites start at Y=1
+
+    ; Get sprite data and register
+    CALL    @GetMurphySpriteData        ; R2 = pattern:attributes
+    CALL    @RegisterSprite
+
+    ; Update tile index for CPU (idle = frame 0)
+    CLR     R0
+    MOVB    R0, @MURPHY_TILE_INDEX
+
+    POP     R11
+    RET

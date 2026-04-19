@@ -1,0 +1,207 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; SPRITE ATTRIBUTE TABLE MANAGEMENT (Split-Screen System)
+; -----------------------------------------------------------------------------
+; Two SATs allow more sprites by switching tables mid-screen at scanline 84
+; SAT_UPPER ($2700): sprites for scanlines 0-83
+; SAT_LOWER ($2780): sprites for scanlines 84-167
+; =============================================================================
+
+; -----------------------------------------------------------------------------
+; InitSATFrameBuffers - Reset both SAT pointers at frame start
+; Call at beginning of each frame before processing enemies
+; Modifies: R0
+; -----------------------------------------------------------------------------
+InitSATFrameBuffers:
+    LI      R0, SAT_UPPER
+    MOV     R0, @SAT_UPPER_PTR
+    LI      R0, SAT_LOWER
+    MOV     R0, @SAT_LOWER_PTR
+    ; Reset VR5 to upper SAT for start of frame
+    LI      R0, >4E00                   ; SAT_UPPER >> 7 = $4E
+    MOVB    R0, @VREG + 5
+    RET
+
+; -----------------------------------------------------------------------------
+; FinalizeSATs - Write $D0 terminator to both SATs
+; Call after all sprites have been registered for the frame
+; Modifies: R0, R1
+; -----------------------------------------------------------------------------
+FinalizeSATs:
+    LI      R1, >D000
+    MOV     @SAT_UPPER_PTR, R0
+    MOVB    R1, *R0
+    MOV     @SAT_LOWER_PTR, R0
+    MOVB    R1, *R0
+    RET
+
+; -----------------------------------------------------------------------------
+; RegisterSprite - Add sprite to appropriate SAT(s) based on Y position
+; Input: R0 = screen X (-32 to 255)
+;        R1 = screen Y (-16 to 167)
+;        R2 = pattern:attributes (high byte = pattern, low byte = attributes)
+; Handles early clock for negative X, registers in both SATs if crossing midline
+; Modifies: R0-R5
+; -----------------------------------------------------------------------------
+RegisterSprite:
+    ; Check visibility first
+    CI      R0, -15
+    JLT     +!notVisible                ; X <= -16, offscreen left
+    CI      R0, 255
+    JGT     +!notVisible                ; X >= 256, offscreen right
+    CI      R1, -15
+    JLT     +!notVisible                ; Y <= -16, offscreen top
+    CI      R1, 167
+    JGT     +!notVisible                ; Y >= 168, offscreen bottom
+
+    ORI     R2, >0010                   ; set PICO9918 opaque flag
+
+    ; Handle early clock for negative X (signed test: need JGT + JEQ)
+    MOV     R0, R0
+    JGT     +!noEarlyClock              ; X > 0: no early clock
+    ; Negative X: enable early clock, adjust X
+    AI      R0, 32                      ; X = screenX + 32
+    ORI     R2, >0080                   ; Set early clock flag (bit 7 in low byte)
+!noEarlyClock:
+
+    ; Check which SAT(s) to use
+    ; Upper SAT if top edge (Y) < MIDLINE
+    ; Lower SAT if bottom edge (Y+16) > MIDLINE
+    MOV     R1, R3
+
+    ; Prepare SAT entry bytes
+    ; R0 = X (adjusted), R1 = Y, R2 = pattern:attributes
+    SWPB    R0                          ; X to high byte
+    SWPB    R1                          ; Y to high byte
+    ; R2 already has pattern in high byte
+
+    ; Register in upper SAT if Y < MIDLINE
+    CI      R3, MIDLINE - 1
+    JGT     +!skipUpper
+    CALL    @RegisterToUpperSAT
+!skipUpper:
+
+    ; Register in lower SAT if Y+16 > MIDLINE
+    CI      R3, MIDLINE - 16
+    JLE     +!notVisible                ; Y+16 <= MIDLINE, entirely in upper half
+    CALL    @RegisterToLowerSAT
+
+!notVisible:
+    RET
+
+; -----------------------------------------------------------------------------
+; RegisterToUpperSAT - Write sprite entry to upper SAT
+; Input: R0=X(swapped), R1=Y(swapped), R2=pattern:attr (high=pattern, low=attr)
+; Modifies: R5
+; -----------------------------------------------------------------------------
+RegisterToUpperSAT:
+    MOV     @SAT_UPPER_PTR, R5
+    CI      R5, SAT_UPPER + 128         ; Max 32 sprites
+    JHE     +!full
+    MOVB    R1, *R5+                    ; Y position
+    MOVB    R0, *R5+                    ; X position
+    MOV     R2, *R5+                    ; Pattern + attributes
+    MOV     R5, @SAT_UPPER_PTR
+!full:
+    RET
+
+; -----------------------------------------------------------------------------
+; RegisterToLowerSAT - Write sprite entry to lower SAT
+; Input: R0=X(swapped), R1=Y(swapped), R2=pattern:attr (high=pattern, low=attr)
+; Modifies: R5
+; -----------------------------------------------------------------------------
+RegisterToLowerSAT:
+    MOV     @SAT_LOWER_PTR, R5
+    CI      R5, SAT_LOWER + 128         ; Max 31 sprites
+    JHE     +!full
+    MOVB    R1, *R5+                    ; Y position
+    MOVB    R0, *R5+                    ; X position
+    MOV     R2, *R5+                    ; Pattern + attributes
+    MOV     R5, @SAT_LOWER_PTR
+!full:
+    RET
+
+; -----------------------------------------------------------------------------
+; WaitAndSwitchSAT - Poll scanline and switch to lower SAT at midline
+; Call after UpdateMovingObjects, during active display
+; Modifies: R0
+; -----------------------------------------------------------------------------
+WaitAndSwitchLowerSAT:
+    MOVB    @>7000, R0                  ; Read current scanline
+    SRL     R0, 8
+    CI      R0, MIDLINE
+    JNE     WaitAndSwitchLowerSAT       ; Loop until scanline >= MIDLINE
+    ; Switch to lower SAT
+    LI      R0, >4F00                   ; SAT_LOWER >> 7 = $4F
+    MOVB    R0, @VREG + 5
+    RET
+
+WaitAndSwitchUpperSAT:
+    MOVB    @>7000, R0                  ; Read current scanline
+    SRL     R0, 8
+    CI      R0, BOTTOM
+    JNE     WaitAndSwitchUpperSAT       ; Loop until scanline >= BOTTOM
+
+    ; Switch to upper SAT
+    LI      R0, >4E00                   ; SAT_UPPER >> 7 = $4E
+    MOVB    R0, @VREG + 5
+    RET
+
+; -----------------------------------------------------------------------------
+; CalcSpritePos - Calculate sprite screen position from tile offset
+; Input: R12 = LEVEL_WORKING offset
+;        R2 = direction (0=U, 2=L, 4=D, 6=R - already multiplied by 2)
+;        R4 = state byte (low nibble contains frame 0-7)
+; Output: R0 = screen X, R1 = screen Y
+; Modifies: R0, R1, R4, R5
+; -----------------------------------------------------------------------------
+CalcSpritePos:
+    ; Extract tile X/Y from R12 offset
+    MOV     R12, R0
+    SRL     R0, 1                       ; word to byte offset
+    MOV     R0, R1
+    ANDI    R0, >003F                   ; X = offset & 63
+    SRL     R1, 6                       ; Y = offset >> 6
+
+    ; Convert to pixels (each tile = 16 pixels)
+    SLA     R0, 4                       ; X * 16
+    SLA     R1, 4                       ; Y * 16
+
+    ; Subtract scroll offset for screen coordinates
+    S       @I_SCROLL_X, R0
+    S       @I_SCROLL_Y, R1
+
+    DEC     R1                          ; Sprites start at 1
+
+    ; Add sub-tile offset based on frame and direction
+    ; R12 points to destination tile; sprite must animate FROM source
+    ; Offset = (frame * 2) - 16: frame 0 = -16 (at source), frame 7 = -2 (near dest)
+    ANDI    R4, >0007                   ; Extract frame (0-7)
+    SLA     R4, 1                       ; frame * 2 pixels
+    AI      R4, -16                     ; Offset from source toward destination
+
+    ; Apply offset based on direction (R2: 0=U, 2=L, 4=D, 6=R)
+    ; Bit 2 = sign: clear=negative (U,L), set=positive (D,R)
+    ; Bit 1 = axis: clear=vertical/Y (U,D), set=horizontal/X (L,R)
+    CI      R2, 4
+    JHE     +!positive
+    NEG     R4
+!positive:
+    ANDI    R2, 2
+    JNE     +!xAxis
+    A       R4, R1
+    RET
+!xAxis:
+    A       R4, R0
+    RET

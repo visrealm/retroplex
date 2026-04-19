@@ -1,0 +1,78 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; SCROLL STATE (set by SetupScrollContext)
+; =============================================================================
+
+; Internal scroll position (with 8px border offset applied)
+I_SCROLL_X          BSS 2               ; X position in pixels (8-696)
+I_SCROLL_Y          BSS 2               ; Y position in pixels (8-208)
+
+; Visible tile bounds (tile coordinates, not pixels)
+SCROLL_MIN_X        BSS 2               ; Leftmost visible tile X
+SCROLL_MAX_X        BSS 2               ; Rightmost visible tile X
+SCROLL_MIN_Y        BSS 2               ; Topmost visible tile Y
+SCROLL_MAX_Y        BSS 2               ; Bottommost visible tile Y
+
+; Tile streaming (detect when new tiles need loading)
+LAST_SCROLL_TILE_X  BSS 2               ; Previous frame's tile X
+LAST_SCROLL_TILE_Y  BSS 2               ; Previous frame's tile Y
+
+; =============================================================================
+; ENEMY / OBJECT PROCESSING
+; =============================================================================
+
+; Process list prevents double-processing when objects move down/right
+PROCESS_LIST        BSS 1024            ; Array of 512 word entries (offset + function)
+
+; Current enemy being processed
+CURRENT_ENEMY_ID    BSS 2               ; Enemy type ID
+CURRENT_ENEMY_TILE  BSS 2               ; Tile ID for this enemy
+CURRENT_SPRITE_FN   BSS 2               ; Sprite function ptr (GetSnikSpriteData, etc)
+
+; Current falling object being processed
+CURRENT_FALL_TYPE   BSS 2               ; high byte = TYPE_x, low byte = flags (FLAG_CAN_ROLL)
+CURRENT_FALL_SPRFN  BSS 2               ; Sprite function pointer
+
+; =============================================================================
+; SPRITE SYSTEM
+; =============================================================================
+
+; Split-screen SAT write pointers
+SAT_UPPER_PTR       BSS 2               ; Current position in upper SAT (>2700)
+SAT_LOWER_PTR       BSS 2               ; Current position in lower SAT (>2780)
+
+; =============================================================================
+; GAME STATE
+; =============================================================================
+
+MURPHY_CELL         BSS 2               ; Murphy's current cell in LEVEL_WORKING
+DISPLAY_COUNTER     BSS 2               ; Frame counter (incremented every frame)
+RANDOM_SEED         BSS 2               ; RNG seed
+
+INFOTRON_COUNT      BSS 2               ; Infotron counter
+EXPLOSION_STARTED   BSS 2               ; Non-zero while explosion is active
+SHOULD_KILL_MURPHY  BSS 2               ; Non-zero when Murphy should die
+
+; Explosion timer circular queue (saves 1.5KB vs full tile array)
+EXPL_TIMER_HEAD     BSS 2               ; Circular queue head index (0-15)
+EXPL_TIMER_TAIL     BSS 2               ; Circular queue tail index (0-15)
+EXPL_TIMER_POOL     BSS EXPL_TIMER_CAPACITY * 4 ; entries x 4 bytes (pos, fire_frame, type)
+
+LEFT_PRESSED        BSS 1               ; left direction pressed
+RIGHT_PRESSED       BSS 1               ; right direction pressed
+UP_PRESSED          BSS 1               ; up direction pressed
+DOWN_PRESSED        BSS 1               ; down direction pressed
+FACING_LEFT         BSS 1               ; murphy face direction
+                    BSS 1               ; padding for word alignment
+MURPHY_SOURCE_CELL  BSS 2               ; Cell Murphy is moving FROM

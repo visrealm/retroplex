@@ -1,0 +1,28 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; generateRandomNumber - Linear Congruential Generator
+; Returns random number in R1
+; Modifies: R0, R1
+; Preserves: R11 (return address)
+; =============================================================================
+generateRandomNumber:
+    MOV     @RANDOM_SEED, R0            ; Load current seed
+    LI      R1, >05E5                   ; Load multiplier (1509)
+    MPY     R1, R0                      ; R0 × R1 -> result in R0:R1 (32-bit)
+    ; R0 = low word (we want this)
+    ; R1 = high word (discard)
+    AI      R1, >0031                   ; Add 49 to low word
+    MOV     R1, @RANDOM_SEED            ; Store new seed
+    SRL     R1, 1                       ; Divide by 2 (shift right 1)
+    RET                                 ; Return  (result in R0)

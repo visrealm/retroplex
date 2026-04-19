@@ -1,0 +1,54 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; ZONK — Falling/rolling object
+; -----------------------------------------------------------------------------
+; Zonk is a round heavy object that falls under gravity and can roll off other
+; round objects (Zonk, Infotron, Chip).
+;
+; DO NOT TOUCH: R12, R13
+; R12 = current tile location in LEVEL_WORKING table
+; R14 = Current tile ID and status
+; =============================================================================
+
+; =============================================================================
+; ENTRY POINT
+; =============================================================================
+
+UpdateZonk:
+    LI      R0, ZONK_CONFIG
+    B       @UpdateFalling
+
+; =============================================================================
+; CONFIGURATION
+; =============================================================================
+
+ZONK_CONFIG:
+    DATA    (TYPE_ZONK << 8) | FLAG_CAN_ROLL    ; tile type, can roll
+    DATA    +!getZonkSpriteData                  ; sprite lookup function
+
+; =============================================================================
+; getZonkSpriteData
+; -----------------------------------------------------------------------------
+; Returns the sprite pattern:attributes for a Zonk.
+; Pattern is read dynamically from LEVEL_MAP so it matches the tile's
+; visual appearance without hardcoding VDP pattern IDs.
+;
+; Input:  (none)
+; Output: R2 = pattern:attributes (high byte = pattern, low byte = attributes)
+; Modifies: R2
+; =============================================================================
+
+!getZonkSpriteData:
+    LI      R2, >C404                   ; pattern 196, palette 4
+    RT

@@ -1,0 +1,120 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; TEXT RENDERING
+; -----------------------------------------------------------------------------
+RenderTextExt:
+    CALL    @RenderText
+    IDLE
+
+RenderText:
+    MOV     @BMP_TEXT_ADDR, R0          ; R0 = text ptr
+    MOVB    @BMP_TEXT_LEN, R1           ; R1 = length
+    SRL     R1, 8
+    JEQ     +!done
+
+    MOVB    @BMP_X, R2                  ; R2 = X
+    SRL     R2, 8
+    MOVB    @BMP_Y, R3                  ; R3 = Y
+    SRL     R3, 8
+
+    MOV     R3, R4                      ; R4 = Y
+    SLA     R4, 6                       ; Y * 64
+    MOV     R2, R7
+    SRL     R7, 1                       ; X / 2
+    A       R7, R4                      ; X / 2 + Y * 64
+    AI      R4, BITMAP_ADDR - 64        ; R4 = base dest
+
+    MOVB    @BMP_TEXT_COLOR, R5         ; R5 = color
+    SRL     R5, 8
+    MOV     R5, R6
+    SRL     R6, 4                       ; R6 = FG (high nibble)
+    ANDI    R5, >000F                   ; R5 = BG (low nibble)
+
+    LI      R10, BMP_FONT_ADDR          ; font base
+
+!charLoop:
+    MOVB    *R0+, R7                    ; char
+    SRL     R7, 8
+    AI      R7, -32                     ; C - 32
+    SLA     R7, 2                       ; *4
+    A       R10, R7                     ; R7 = font ptr
+
+    MOV     R4, R8                      ; dest base for char
+    LI      R9, 4                       ; 4 font bytes
+
+!fontByteLoop:
+    MOVB    *R7+, R3                    ; font byte (8 bits)
+    SRL     R3, 8                       ; now in low byte
+    MOV     R3, R2                      ; save full byte
+
+    ; ----- high nibble (row N) -----
+    SRL     R3, 4                       ; move high nibble down
+    AI      R8, 64                      ; advance to next pair of rows
+    MOV     R8, R12
+
+    CALL    @!RenderTextRow             ; row N
+
+    ; ----- low nibble (row N+1) -----
+    MOV     R2, R3                      ; restore original byte
+    ANDI    R3, >000F                   ; isolate low nibble
+    AI      R8, 64
+    MOV     R8, R12
+    CALL    @!RenderTextRow             ; row N+1
+
+    DEC     R9
+    JNE     -!fontByteLoop
+
+    INCT    R4                          ; dest += 2 bytes (next char)
+
+    DEC     R1
+    JNE     -!charLoop
+
+!done:
+    RET
+
+; R3 = nibble (4 pixels)
+; R12 = dest address
+; R5 = BG color nibble
+; R6 = FG color nibble
+!RenderTextRow:
+    MOV     R3, R13
+    SLA     R13, 12                     ; bit3 -> sign
+
+    LI      R14, 2                      ; 2 bytes (4 pixels)
+
+!loop:
+    ; pixel 0
+    MOV     R6, R3
+    MOV     R13, R13
+    JLT     +!skip0
+    MOV     R5, R3
+!skip0:
+
+    SLA     R3, 4
+
+    ; pixel 1
+    MOV     R6, R11
+    SLA     R13, 1
+    JLT     +!skip1
+    MOV     R5, R11
+!skip1:
+    A       R11, R3
+    SLA     R13, 1
+    SLA     R3, 8
+    MOVB    R3, *R12+
+
+    DEC     R14
+    JNE     -!loop
+
+    RET

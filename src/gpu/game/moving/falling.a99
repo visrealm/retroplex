@@ -1,0 +1,1011 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; FALLING / ROLLING MECHANICS — Shared handler for Zonk, Infotron, OrangeDisk
+; -----------------------------------------------------------------------------
+;
+; Entry: per-type stub (UpdateZonk etc.) loads R0 = pointer to config table,
+;        then jumps here.  Caller supplies R12 = LEVEL_WORKING tile offset,
+;        R14 = [TileID:State].
+;
+; Config table layout (2 words):
+;   Word 0: (TYPE_x << 8) | flags   (FLAG_CAN_ROLL = >01)
+;   Word 1: sprite function pointer
+;
+; State byte encoding (low byte of LEVEL_WORKING word):
+;   >00       = at rest — check for fall / roll every frame
+;   >40–>41   = pre-fall 2-frame delay (object still at SOURCE tile)
+;   >10–>17   = landing animation (object at DESTINATION tile)
+;   >70       = gravity — commit another fall tile immediately
+;   >50–>51   = rolling left pre-roll (object at SOURCE, 2 frames)
+;   >60–>61   = rolling right pre-roll (object at SOURCE, 2 frames)
+;   >22–>27   = post-roll-left animation (object at LEFT/DEST tile, frames 2–7)
+;   >32–>37   = post-roll-right animation (object at RIGHT/DEST tile, frames 2–7)
+;
+; Marker words placed in neighbour tiles (tile-ID byte > >1F → invisible to
+; object scanner; RenderTile treats them as empty):
+;   >8888     = "side tile reserved for roll"
+;   >9999     = "tile below reserved for falling"
+;   >AAAA     = "roll path partially blocked"
+;
+; DO NOT TOUCH: R12, R13, R14 (owned by caller / ProcessMovingObjectList)
+; =============================================================================
+
+FLAG_CAN_ROLL       EQU >01
+FLAG_NO_ROLL        EQU >00
+
+; =============================================================================
+; IS_ROUND_TABLE
+; -----------------------------------------------------------------------------
+; Byte lookup: index = tile type ID (0-31), value = non-zero if round.
+; Round tiles: TYPE_ZONK (1), TYPE_INFOTRON (4), TYPE_RAM_CHIP (5).
+; Things can roll off these tiles when they are at rest (state 0).
+; =============================================================================
+
+IS_ROUND_TABLE:
+    BYTE    0                           ; 00 TYPE_EMPTY
+    BYTE    1                           ; 01 TYPE_ZONK         ROUND
+    BYTE    0                           ; 02 TYPE_BASE
+    BYTE    0                           ; 03 TYPE_MURPHY
+    BYTE    1                           ; 04 TYPE_INFOTRON      ROUND
+    BYTE    1                           ; 05 TYPE_RAM_CHIP      ROUND
+    BYTE    0                           ; 06 TYPE_WALL
+    BYTE    0                           ; 07 TYPE_EXIT
+    BYTE    0                           ; 08 TYPE_DISK_ORANGE
+    BYTE    0                           ; 09 TYPE_PORT_RIGHT
+    BYTE    0                           ; 0A TYPE_PORT_DOWN
+    BYTE    0                           ; 0B TYPE_PORT_LEFT
+    BYTE    0                           ; 0C TYPE_PORT_UP
+    BYTE    0                           ; 0D TYPE_GRAV_RIGHT
+    BYTE    0                           ; 0E TYPE_GRAV_DOWN
+    BYTE    0                           ; 0F TYPE_GRAV_LEFT
+    BYTE    0                           ; 10 TYPE_GRAV_UP
+    BYTE    0                           ; 11 TYPE_SNIK_SNAK
+    BYTE    0                           ; 12 TYPE_DISK_YELLOW
+    BYTE    0                           ; 13 TYPE_TERMINAL
+    BYTE    0                           ; 14 TYPE_DISK_RED
+    BYTE    0                           ; 15 TYPE_PORT_VERT
+    BYTE    0                           ; 16 TYPE_PORT_HORIZ
+    BYTE    0                           ; 17 TYPE_PORT_4WAY
+    BYTE    0                           ; 18 TYPE_ELECTRON
+    BYTE    0                           ; 19 TYPE_BUG
+    BYTE    0                           ; 1A
+    BYTE    0                           ; 1B
+    BYTE    0                           ; 1C
+    BYTE    0                           ; 1D
+    BYTE    0                           ; 1E
+    BYTE    0                           ; 1F TYPE_EXPLOSION
+    EVEN
+
+; =============================================================================
+; UpdateFalling — shared entry point
+; -----------------------------------------------------------------------------
+; Input:  R0  = pointer to per-type config table (2 words)
+;         R12 = LEVEL_WORKING tile offset
+;         R14 = [TileID:State]
+; =============================================================================
+
+UpdateFalling:
+    ; Validate: config high byte (tile type) must match R14 high byte
+    CB      *R0, R14
+    JEQ     +!validTile
+    RT
+
+!validTile:
+    ; Load config into globals (using *R0+ like the enemy system)
+    MOV     *R0+, @CURRENT_FALL_TYPE    ; [TYPE<<8 | flags]
+    MOV     *R0+, @CURRENT_FALL_SPRFN   ; sprite function pointer
+
+    ; Dispatch on high nibble of state byte via jump table.
+    ; state high nibble * 16 is in range 0,>10,>20...>70 (low byte after ANDI >00F0).
+    ; SRL by 3 converts to word byte index 0,2,4...14 for the 8-entry table below.
+    MOV     R14, R1
+    ANDI    R1, >00F0                   ; R1 = high nibble of state * 16
+    SRL     R1, 3                       ; R1 = word byte index (0,2,4..14)
+    MOV     R1, R3                      ; copy to indexable register (R0 cannot index)
+    MOV     @FALL_DISPATCH(R3), R3      ; load handler address from table
+    B       *R3                         ; jump to handler
+
+FALL_DISPATCH:
+    DATA    FallingCheckRest              ; nibble >0 → at rest
+    DATA    FallingAnimateLanded          ; nibble >1 → landing animation
+    DATA    FallingAnimateRollLeftArrived ; nibble >2 → post-roll-left at dest
+    DATA    FallingAnimateRollRightArrived; nibble >3 → post-roll-right at dest
+    DATA    FallingAnimateFall            ; nibble >4 → pre-fall delay
+    DATA    FallingAnimateRollLeft        ; nibble >5 → rolling left pre-roll
+    DATA    FallingAnimateRollRight       ; nibble >6 → rolling right pre-roll
+    DATA    FallingContinueFall           ; nibble >7 → gravity commit
+
+FallingUnknownState:
+    RT
+
+; =============================================================================
+; FallingCheckRest — state >00
+; -----------------------------------------------------------------------------
+; Object is stationary. Decide each frame whether to fall or roll.
+; =============================================================================
+
+FallingCheckRest:
+    ; Check for "just landed" state (>08): render tile this frame, then truly rest.
+    ; This delays tile render by one frame so it doesn't overlap the last sprite.
+    MOV     R14, R1
+    ANDI    R1, >00FF                   ; R1 = state byte
+    JEQ     +!doRestCheck               ; state 0 = normal rest check
+    CLR     R5
+    CALL    @RenderTempTile             ; render static tile into VRAM
+    CLR     R2
+    MOVB    R2, @STATUS_WORKING(R12)
+    RT
+
+!doRestCheck:
+    ; --- Check tile directly below ---
+    CLR     R0
+    MOVB    @LW_BELOW(R12), R0          ; R0 = [BelowTileId:0]
+
+    ; Empty below?
+    JEQ     +!startFall
+
+    ; >99xx marker below (gravity reservation)?
+    CI      R0, >9900
+    JEQ     +!startFall
+
+    ; --- Check for rolling ---
+    MOV     @CURRENT_FALL_TYPE, R1
+    ANDI    R1, FLAG_CAN_ROLL
+    JEQ     +!restDone                  ; can't roll
+
+    ; Below tile must be round AND at state 0
+    MOV     R0, R9                      ; copy to indexable register (R0 cannot index)
+    SRL     R9, 8                       ; R9 = below tile ID in low byte
+    MOVB    @IS_ROUND_TABLE(R9), R2     ; R2 high byte = round flag
+    JEQ     +!restDone                  ; not round
+
+    CI      R9, TYPE_RAM_CHIP           ; chips use state for variant ID, not animation
+    JEQ     +!belowAtRest               ; always at rest
+
+    MOVB    @SW_BELOW(R12), R0          ; R0 = state of below tile
+    JNE     +!restDone                  ; below tile not at rest (state != 0)
+
+!belowAtRest:
+
+    ; --- Try roll left ---
+    ; Conditions: left tile empty AND below-left tile empty/marker
+
+    MOVB    @LW_LEFT(R12), R0           ; R0 = [LeftTileId:0]
+    JNE     +!tryRollRight              ; left occupied
+
+    MOVB    @LW_BELOW_LEFT(R12), R0     ; R0 = [BelowLeftTileId:0]
+    JEQ     +!startRollLeft
+
+    CI      R0, >8800                   ; >88 marker?
+    JEQ     +!startRollLeft
+    CI      R0, >AA00                   ; >AA marker?
+    JEQ     +!startRollLeft
+
+    ; --- Try roll right ---
+!tryRollRight:
+    MOVB    @LW_RIGHT(R12), R0
+    JNE     +!restDone                  ; right occupied
+
+    MOVB    @LW_BELOW_RIGHT(R12), R0
+    JEQ     +!startRollRight
+
+    CI      R0, >8800
+    JEQ     +!startRollRight
+    CI      R0, >AA00
+    JEQ     +!startRollRight
+
+!restDone:
+    RT
+
+!startFall:
+    ; Set state >40 (pre-fall delay)
+    LI      R0, >4000
+    MOVB    R0, @STATUS_WORKING(R12)
+    RT
+
+!startRollLeft:
+    ; Set state >50 (rolling left), place >8888 marker in left tile
+    LI      R0, >5000
+    MOVB    R0, @STATUS_WORKING(R12)
+    LI      R0, >8888
+    MOV     R0, @LW_LEFT(R12)
+    RT
+
+!startRollRight:
+    ; Set state >60 (rolling right), place >8888 marker in right tile
+    LI      R0, >6000
+    MOVB    R0, @STATUS_WORKING(R12)
+    LI      R0, >8888
+    MOV     R0, @LW_RIGHT(R12)
+    RT
+
+; =============================================================================
+; FallingAnimateFall — state >40–>41
+; -----------------------------------------------------------------------------
+; Object is still at SOURCE tile (R12). Two-frame delay before committing move.
+; Registers a sprite at the source position. On commit: writes [TYPE:>10] to
+; destination (below) and clears source.
+; =============================================================================
+
+FallingAnimateFall:
+    ; Register sprite at current (source) position.
+    ; Use CalcSpritePos with dest = tile below, dir = DOWN, frame = 0
+    ; (frame 0 with dest=below places sprite exactly at source tile).
+    PUSH    R11
+    PUSH    R12
+    AI      R12, TILE_BELOW             ; R12 = destination (below)
+    LI      R2, 4                       ; direction = DOWN
+    CLR     R4                          ; frame 0 → sprite at source
+    CALL    @CalcSpritePos              ; R0=X, R1=Y
+    MOV     @CURRENT_FALL_SPRFN, R9
+    BL      *R9                         ; R2 = pattern:attributes
+    CALL    @RegisterSprite
+    POP     R12
+    POP     R11
+
+    ; Blank source tile visually (sprite handles the display)
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile
+
+    ; Increment state
+    MOV     R14, R1
+    ANDI    R1, >00FF
+    INC     R1
+
+    CI      R1, >0042
+    JL      +!storeFallState            ; state < >42: still in delay, store and return
+
+    ; state >= >42: check if below is still empty
+    CLR     R0
+    MOVB    @LW_BELOW(R12), R0
+    JEQ     +!commitFall
+
+    CI      R0, >9900                   ; >99 marker is OK too
+    JEQ     +!commitFall
+
+    ; Below is occupied. If it's still animating (non-zero state), stall.
+    ; If it's at final rest (state 0), give up pre-fall and return to >00.
+    MOVB    @SW_BELOW(R12), R2          ; R2 high byte = below tile state
+    JNE     +!doStall                   ; non-zero → still moving, keep stalling
+
+    ; Below at final rest — abandon pre-fall, restore tile, return to >00
+    CLR     R2
+    MOVB    R2, @STATUS_WORKING(R12)    ; state → >00
+    CLR     R5
+    CALL    @RenderTempTile             ; overwrite TILE_ATTR_BLANK with real tile
+    RT
+
+!doStall:
+    LI      R1, >0041
+
+!storeFallState:
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)
+    RT
+
+!commitFall:
+    ; Move object to destination: leave transit marker at source, write [TYPE:>10] to below.
+    ; Transit marker (tile ID >EE > >1F, invisible to scanner) blocks objects above from
+    ; starting to fall until our landing animation completes and we clear it.
+    LI      R1, >EEEE
+    MOV     R1, @LEVEL_WORKING(R12)     ; source gets transit marker (not cleared yet)
+    CLR     R5
+    CALL    @RenderTempTile             ; render source as visually empty (sprite still covers it)
+
+    MOV     @CURRENT_FALL_TYPE, R1
+    ANDI    R1, >FF00                   ; keep TYPE byte, clear flags
+    ORI     R1, >0010                   ; state = >10 (landing animation frame 0)
+    MOV     R1, @LW_BELOW(R12)          ; write to destination tile
+    RT
+
+; =============================================================================
+; FallingAnimateLanded — state >10–>17
+; -----------------------------------------------------------------------------
+; Object is at DESTINATION tile (R12). 8-frame landing animation, then
+; re-evaluate below.
+; =============================================================================
+
+FallingAnimateLanded:
+    ; Register sprite animating from source toward current (destination) tile.
+    ; R12 = destination. CalcSpritePos: frame 0 = 16px above R12 (= source), frame 7 = 2px above R12.
+    PUSH    R11
+    MOV     R14, R4
+    ANDI    R4, >0007                   ; frame from state low bits (0–7)
+    LI      R2, 4                       ; direction = DOWN
+    CALL    @CalcSpritePos
+    MOV     @CURRENT_FALL_SPRFN, R9
+    BL      *R9                         ; R2 = pattern:attributes
+    CALL    @RegisterSprite
+    POP     R11
+
+    ; Increment state
+    MOV     R14, R1
+    ANDI    R1, >00FF
+    INC     R1
+
+    CI      R1, >0018                   ; past frame 7 (>10+8 = >18)?
+    JL      +!storeLandedState          ; not yet
+
+    ; Animation done. Set "just landed" state (>08) so tile renders NEXT frame,
+    ; after the last sprite is gone (avoids tile+sprite double-image on frame 7).
+    LI      R2, >0800
+    MOVB    R2, @STATUS_WORKING(R12)
+
+    ; Clear the transit marker we left at our source tile (one row above).
+    ; This unblocks objects above to start falling now that we have fully landed.
+    CLR     R0
+    MOVB    @LW_ABOVE(R12), R0          ; R0 = [TileAboveId:0]
+    CI      R0, >EE00                   ; transit marker?
+    JNE     +!noTransitClear
+    CLR     @LW_ABOVE(R12)              ; source tile is now truly empty
+!noTransitClear:
+
+    ; Check below for next action
+    CLR     R0
+    MOVB    @LW_BELOW(R12), R0          ; R0 = [BelowTileId:0]
+    JEQ     +!continueGravity
+
+    CI      R0, >9900                   ; >99 marker?
+    JEQ     +!continueGravity
+
+    ; Below is occupied: handle landing consequences.
+    ; Tile renders on the next frame when FallingCheckRest sees state >08.
+    CALL    @FallingHandleLanding
+    RT
+
+!continueGravity:
+    ; Below is empty — commit the next fall immediately (no >70 intermediate state).
+    ; Leave transit marker at current position so objects above cannot follow immediately.
+    ; The >08 state write above is overwritten harmlessly by the transit marker word below.
+    LI      R1, >EEEE
+    MOV     R1, @LEVEL_WORKING(R12)     ; current position gets transit marker
+    MOV     @CURRENT_FALL_TYPE, R1
+    ANDI    R1, >FF00                   ; keep type byte
+    ORI     R1, >0010                   ; state >10 (landing animation frame 0)
+    MOV     R1, @LW_BELOW(R12)          ; write to destination
+    RT
+
+!storeLandedState:
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)
+    RT
+
+; =============================================================================
+; FallingContinueFall — state >70
+; -----------------------------------------------------------------------------
+; Immediately commit another fall tile (the >9999 reservation below was set
+; during FallingAnimateLanded). Move object to destination.
+; =============================================================================
+
+FallingContinueFall:
+    ; State >70 is no longer set in normal flow — !continueGravity now commits
+    ; the fall directly. This handler is kept as a safety fallback only.
+    CLR     R0
+    MOVB    R0, @STATUS_WORKING(R12)    ; reset to rest state
+    CLR     R5
+    CALL    @RenderTempTile             ; re-render tile
+    RT
+
+; =============================================================================
+; FallingAnimateRollLeft — state >50–>51
+; -----------------------------------------------------------------------------
+; Object is at SOURCE tile (R12). 2-frame pre-roll animation.
+; At state >52: commit — source cleared, LEFT tile gets [TYPE:>22] (post-roll
+; state), BELOW-LEFT reserved with transit marker >EEEE.
+; Stall (hold at >51) if below-left occupied or left tile stolen.
+; =============================================================================
+
+FallingAnimateRollLeft:
+    ; === EARLY ABORT CHECK (both >50 and >51, before any rendering) ===
+    ; If BELOW-LEFT is permanently occupied, abort now — no sprite, no blank.
+    ; At >51 the source was blanked last frame, so re-render it on abort.
+    MOV     @LW_BELOW_LEFT(R12), R0
+    JEQ     +!skipEarlyAbortL           ; empty → proceed
+    ANDI    R0, >00FF
+    JNE     +!skipEarlyAbortL           ; state≠0 → still moving, stall OK
+    CLR     @LW_LEFT(R12)               ; clear >88 path marker
+    CLR     R0
+    MOVB    R0, @STATUS_WORKING(R12)    ; state → >00
+    CLR     R5
+    CALL    @RenderTempTile             ; restore source (no-op at >50, fixes blank at >51)
+    RT
+!skipEarlyAbortL:
+    ; Register sprite interpolating from source toward left tile.
+    PUSH    R11
+    PUSH    R12
+    MOV     R14, R4                     ; R4 = state for frame extraction
+    ANDI    R4, >0007                   ; frame = state & 7 (0–1)
+    AI      R12, TILE_LEFT              ; R12 = destination (left tile)
+    LI      R2, 2                       ; direction = LEFT
+    CALL    @CalcSpritePos
+    MOV     @CURRENT_FALL_SPRFN, R9
+    BL      *R9                         ; R2 = pattern:attributes
+    CALL    @RegisterSprite
+    POP     R12
+    POP     R11
+
+    ; Blank source tile
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile
+
+    ; Blank destination (left) tile
+    MOV     R12, R1
+    AI      R1, TILE_LEFT
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTileR1
+
+    ; Increment state
+    MOV     R14, R1
+    ANDI    R1, >00FF
+    INC     R1
+
+    CI      R1, >0052
+    JL      +!storeRollLState           ; < >52: still in pre-roll, just store
+
+    ; === COMMIT CHECK (state >52) ===
+    ; below-left: only accept fully empty (tile=0 AND state=0)
+    MOV     @LW_BELOW_LEFT(R12), R0
+    JEQ     +!checkLeftTileRL           ; fully empty → check left tile
+
+    ; below-left occupied: stall if still moving (state≠0), abort if permanent (state=0)
+    ANDI    R0, >00FF                   ; isolate state byte
+    JNE     +!rollLStall                ; non-zero → still moving, stall
+
+    ; Permanently blocked — abort roll: clear >88 path marker, reset to rest
+    CLR     @LW_LEFT(R12)
+    CLR     R2
+    MOVB    R2, @STATUS_WORKING(R12)    ; state → >00
+    CLR     R5
+    CALL    @RenderTempTile             ; re-render source tile
+    RT
+
+!checkLeftTileRL:
+    ; left tile: accept empty (>0000) or >88 marker (>8888)
+    MOV     @LW_LEFT(R12), R0
+    JEQ     +!commitLeftRoll            ; empty → OK
+    CI      R0, >8888
+    JEQ     +!commitLeftRoll            ; >88 marker → OK
+
+!rollLStall:
+    LI      R1, >0051                   ; hold at >51, no >AA markers
+
+!storeRollLState:
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)
+    RT
+
+!commitLeftRoll:
+    ; Source → transit marker, render blank
+    LI      R0, >EEEE
+    MOV     R0, @LEVEL_WORKING(R12)
+    CLR     R5
+    CALL    @RenderTempTile             ; source rendered visually empty
+
+    ; Left tile → [TYPE:>22]  (post-roll-left, nibble >2, starting frame 2)
+    MOV     @CURRENT_FALL_TYPE, R0
+    ANDI    R0, >FF00
+    ORI     R0, >0022
+    MOV     R0, @LW_LEFT(R12)
+
+    ; Below-left → >EEEE (reserve landing cell)
+    LI      R0, >EEEE
+    MOV     R0, @LW_BELOW_LEFT(R12)
+    RT
+
+; =============================================================================
+; FallingAnimateRollRight — state >60–>61
+; -----------------------------------------------------------------------------
+; Mirror of FallingAnimateRollLeft but toward the right tile.
+; 2-frame pre-roll. Commit at >62: source → >EEEE, RIGHT tile → [TYPE:>32],
+; BELOW-RIGHT → >EEEE. Stall (hold at >61) if blocked.
+; =============================================================================
+
+FallingAnimateRollRight:
+    ; === EARLY ABORT CHECK (both >60 and >61, before any rendering) ===
+    MOV     @LW_BELOW_RIGHT(R12), R0
+    JEQ     +!skipEarlyAbortR           ; empty → proceed
+    ANDI    R0, >00FF
+    JNE     +!skipEarlyAbortR           ; state≠0 → still moving, stall OK
+    CLR     @LW_RIGHT(R12)              ; clear >88 path marker
+    CLR     R0
+    MOVB    R0, @STATUS_WORKING(R12)    ; state → >00
+    CLR     R5
+    CALL    @RenderTempTile             ; restore source (no-op at >60, fixes blank at >61)
+    RT
+!skipEarlyAbortR:
+    PUSH    R11
+    PUSH    R12
+    MOV     R14, R4
+    ANDI    R4, >0007                   ; frame = state & 7 (0–1)
+    AI      R12, TILE_RIGHT
+    LI      R2, 6                       ; direction = RIGHT
+    CALL    @CalcSpritePos
+    MOV     @CURRENT_FALL_SPRFN, R9
+    BL      *R9
+    CALL    @RegisterSprite
+    POP     R12
+    POP     R11
+
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile             ; blank source
+
+    MOV     R12, R1
+    AI      R1, TILE_RIGHT
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTileR1           ; blank destination
+
+    MOV     R14, R1
+    ANDI    R1, >00FF
+    INC     R1
+
+    CI      R1, >0062
+    JL      +!storeRollRState           ; < >62: still in pre-roll, just store
+
+    ; === COMMIT CHECK (state >62) ===
+    ; below-right: only accept fully empty (tile=0 AND state=0)
+    MOV     @LW_BELOW_RIGHT(R12), R0
+    JEQ     +!checkRightTileRR          ; fully empty → check right tile
+
+    ; below-right occupied: stall if still moving (state≠0), abort if permanent (state=0)
+    ANDI    R0, >00FF                   ; isolate state byte
+    JNE     +!rollRStall                ; non-zero → still moving, stall
+
+    ; Permanently blocked — abort roll: clear >88 path marker, reset to rest
+    CLR     @LW_RIGHT(R12)
+    CLR     R2
+    MOVB    R2, @STATUS_WORKING(R12)    ; state → >00
+    CLR     R5
+    CALL    @RenderTempTile             ; re-render source tile
+    RT
+
+!checkRightTileRR:
+    ; right tile: accept empty (>0000) or >88 marker (>8888)
+    MOV     @LW_RIGHT(R12), R0
+    JEQ     +!commitRightRoll           ; empty → OK
+    CI      R0, >8888
+    JEQ     +!commitRightRoll           ; >88 marker → OK
+
+!rollRStall:
+    LI      R1, >0061                   ; hold at >61, no >AA markers
+
+!storeRollRState:
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)
+    RT
+
+!commitRightRoll:
+    ; Source → transit marker, render blank
+    LI      R0, >EEEE
+    MOV     R0, @LEVEL_WORKING(R12)
+    CLR     R5
+    CALL    @RenderTempTile             ; source rendered visually empty
+
+    ; Right tile → [TYPE:>32]  (post-roll-right, nibble >3, starting frame 2)
+    MOV     @CURRENT_FALL_TYPE, R0
+    ANDI    R0, >FF00
+    ORI     R0, >0032
+    MOV     R0, @LW_RIGHT(R12)
+
+    ; Below-right → >EEEE (reserve landing cell)
+    LI      R0, >EEEE
+    MOV     R0, @LW_BELOW_RIGHT(R12)
+    RT
+
+; =============================================================================
+; FallingAnimateRollLeftArrived — state >22–>27
+; -----------------------------------------------------------------------------
+; Object has committed the left roll and is now at the LEFT tile (R12).
+; Continues the slide-left animation at frames 2–7.
+; At >24: marks original source (TILE_RIGHT) with >AAAA.
+; At >26: clears original source and triggers mid-roll cascade.
+; At >28: left tile → transit marker, BELOW → [TYPE:>10] (fall commit).
+; =============================================================================
+
+FallingAnimateRollLeftArrived:
+    ; Register sprite: R12 already at LEFT (destination) tile — no TILE_LEFT adjust.
+    PUSH    R11
+    PUSH    R12
+    MOV     R14, R4
+    ANDI    R4, >0007                   ; frame = state & 7 (2–7)
+    LI      R2, 2                       ; direction = LEFT
+    CALL    @CalcSpritePos
+    MOV     @CURRENT_FALL_SPRFN, R9
+    BL      *R9
+    CALL    @RegisterSprite
+    POP     R12
+    POP     R11
+
+    ; Blank current (LEFT) tile — sprite covers it
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile
+
+    ; Increment state
+    MOV     R14, R1
+    ANDI    R1, >00FF
+    INC     R1
+
+    ; State >= >28: fall commit
+    CI      R1, >0028
+    JL      +!checkRollLAMidActions
+
+    ; Left tile → transit marker, BELOW → [TYPE:>10] (start fall animation)
+    LI      R0, >EEEE
+    MOV     R0, @LEVEL_WORKING(R12)
+    MOV     @CURRENT_FALL_TYPE, R0
+    ANDI    R0, >FF00
+    ORI     R0, >0010
+    MOV     R0, @LW_BELOW(R12)
+    RT
+
+!checkRollLAMidActions:
+    ; At >26: store state, clear source and trigger mid-roll cascade
+    CI      R1, >0026
+    JNE     +!checkRollLAMark
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)    ; store state >26 BEFORE cascade
+    PUSH    R12
+    AI      R12, TILE_RIGHT             ; R12 = original source position
+    CALL    @FallingRollSrcClear
+    POP     R12
+    RT
+
+!checkRollLAMark:
+    ; At >24: mark original source (TILE_RIGHT) with >AA
+    CI      R1, >0024
+    JNE     +!storeRollLAState
+    LI      R0, >AAAA
+    MOV     R0, @LW_RIGHT(R12)
+
+!storeRollLAState:
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)
+    RT
+
+; =============================================================================
+; FallingAnimateRollRightArrived — state >32–>37
+; -----------------------------------------------------------------------------
+; Mirror of FallingAnimateRollLeftArrived but toward the right tile.
+; Object is now at the RIGHT tile (R12).
+; At >34: marks original source (TILE_LEFT) with >AAAA.
+; At >36: clears original source and triggers mid-roll cascade.
+; At >38: right tile → transit marker, BELOW → [TYPE:>10] (fall commit).
+; =============================================================================
+
+FallingAnimateRollRightArrived:
+    PUSH    R11
+    PUSH    R12
+    MOV     R14, R4
+    ANDI    R4, >0007                   ; frame = state & 7 (2–7)
+    LI      R2, 6                       ; direction = RIGHT
+    CALL    @CalcSpritePos
+    MOV     @CURRENT_FALL_SPRFN, R9
+    BL      *R9
+    CALL    @RegisterSprite
+    POP     R12
+    POP     R11
+
+    ; Blank current (RIGHT) tile — sprite covers it
+    LI      R5, TILE_ATTR_BLANK
+    CALL    @RenderTempTile
+
+    ; Increment state
+    MOV     R14, R1
+    ANDI    R1, >00FF
+    INC     R1
+
+    ; State >= >38: fall commit
+    CI      R1, >0038
+    JL      +!checkRollRAMidActions
+
+    ; Right tile → transit marker, BELOW → [TYPE:>10] (start fall animation)
+    LI      R0, >EEEE
+    MOV     R0, @LEVEL_WORKING(R12)
+    MOV     @CURRENT_FALL_TYPE, R0
+    ANDI    R0, >FF00
+    ORI     R0, >0010
+    MOV     R0, @LW_BELOW(R12)
+    RT
+
+!checkRollRAMidActions:
+    ; At >36: store state, clear source and trigger mid-roll cascade
+    CI      R1, >0036
+    JNE     +!checkRollRAMark
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)    ; store state >36 BEFORE cascade
+    PUSH    R12
+    AI      R12, TILE_LEFT              ; R12 = original source position
+    CALL    @FallingRollSrcClear
+    POP     R12
+    RT
+
+!checkRollRAMark:
+    ; At >34: mark original source (TILE_LEFT) with >AA
+    CI      R1, >0034
+    JNE     +!storeRollRAState
+    LI      R0, >AAAA
+    MOV     R0, @LW_LEFT(R12)
+
+!storeRollRAState:
+    SWPB    R1
+    MOVB    R1, @STATUS_WORKING(R12)
+    RT
+
+; =============================================================================
+; FallingRollSrcClear
+; -----------------------------------------------------------------------------
+; Called mid-roll to clear the original source tile and trigger any cascade
+; that became possible now that the source is vacating.
+;
+; Input:  R12 = original source position (LEVEL_WORKING offset)
+; Modifies: R0, R1, R3
+; =============================================================================
+
+FallingRollSrcClear:
+    ; Clear source tile unless it's an explosion
+    CLR     R0
+    MOVB    @LEVEL_WORKING(R12), R0     ; R0 = [TileID:0]
+    CI      R0, TYPE_EXPLOSION << 8
+    JEQ     +!srcClearDone
+    CLR     @LEVEL_WORKING(R12)         ; source → empty
+
+!srcClearDone:
+    ; Above-of-source must be empty (or >99 reservation) to allow cascade
+    CLR     R0
+    MOVB    @LW_ABOVE(R12), R0
+    JEQ     +!checkSrcCascadeL          ; empty → proceed
+    CI      R0, >9900
+    JNE     +!srcCascadeDone            ; something real above → skip
+
+!checkSrcCascadeL:
+    ; Check above-left of source: round tile at rest?
+    CLR     R0
+    MOVB    @LW_ABOVE_LEFT(R12), R0
+    JEQ     +!checkSrcCascadeR
+    MOV     R0, R3
+    SRL     R3, 8
+    MOVB    @IS_ROUND_TABLE(R3), R1
+    JEQ     +!checkSrcCascadeR
+    MOVB    @SW_ABOVE_LEFT(R12), R0
+    JNE     +!checkSrcCascadeR          ; not at rest
+
+    ; Check left-of-source: round tile at rest?
+    CLR     R0
+    MOVB    @LW_LEFT(R12), R0
+    JEQ     +!checkSrcCascadeR
+    MOV     R0, R3
+    SRL     R3, 8
+    MOVB    @IS_ROUND_TABLE(R3), R1
+    JEQ     +!checkSrcCascadeR
+    CI      R3, TYPE_RAM_CHIP
+    JEQ     +!srcTriggerL
+    MOVB    @SW_LEFT(R12), R0
+    JNE     +!checkSrcCascadeR          ; left not at rest
+
+!srcTriggerL:
+    ; Trigger above-left to roll RIGHT (>60)
+    LI      R0, >6000
+    MOVB    R0, @SW_ABOVE_LEFT(R12)
+    LI      R0, >8888
+    MOV     R0, @LW_ABOVE(R12)
+    RET
+
+!checkSrcCascadeR:
+    ; Check above-right of source: round tile at rest?
+    CLR     R0
+    MOVB    @LW_ABOVE_RIGHT(R12), R0
+    JEQ     +!srcCascadeDone
+    MOV     R0, R3
+    SRL     R3, 8
+    MOVB    @IS_ROUND_TABLE(R3), R1
+    JEQ     +!srcCascadeDone
+    MOVB    @SW_ABOVE_RIGHT(R12), R0
+    JNE     +!srcCascadeDone            ; not at rest
+
+    ; Check right-of-source: round tile at rest?
+    CLR     R0
+    MOVB    @LW_RIGHT(R12), R0
+    JEQ     +!srcCascadeDone
+    MOV     R0, R3
+    SRL     R3, 8
+    MOVB    @IS_ROUND_TABLE(R3), R1
+    JEQ     +!srcCascadeDone
+    CI      R3, TYPE_RAM_CHIP
+    JEQ     +!srcTriggerR
+    MOVB    @SW_RIGHT(R12), R0
+    JNE     +!srcCascadeDone            ; right not at rest
+
+!srcTriggerR:
+    ; Trigger above-right to roll LEFT (>50)
+    LI      R0, >5000
+    MOVB    R0, @SW_ABOVE_RIGHT(R12)
+    LI      R0, >8888
+    MOV     R0, @LW_ABOVE(R12)
+
+!srcCascadeDone:
+    RET
+
+; =============================================================================
+; FallingHandleLanding
+; -----------------------------------------------------------------------------
+; Called from FallingAnimateLanded after 8-frame landing animation ends and
+; the tile below is occupied. Handles collisions and triggers cascades.
+; State is already reset to >00 before this call.
+;
+; Input: R12 = current tile position (just landed)
+; =============================================================================
+
+FallingHandleLanding:
+    ; --- Orange Disk and other FLAG_NO_ROLL objects always explode on landing ---
+    MOV     @CURRENT_FALL_TYPE, R1
+    ANDI    R1, FLAG_CAN_ROLL
+    JNE     +!normalLanding
+
+    ; FLAG_NO_ROLL: check below is not already an explosion
+    CLR     R0
+    MOVB    @LW_BELOW(R12), R0
+    CI      R0, TYPE_EXPLOSION << 8
+    JEQ     +!landingDone               ; already exploding, skip
+
+    MOV     R12, R0                     ; explode at the landing tile
+    CALL    @DetonateBigExplosion
+    RET
+
+!normalLanding:
+    ; Read tile below    
+    MOVB    @LW_BELOW(R12), R3          ; R3 = [BelowTileId:0]
+    SRL     R3, 8                       ; R3 = tile ID in low byte
+
+    ; --- Murphy → big explosion ---
+    CI      R3, TYPE_MURPHY
+    JNE     +!notMurphy
+
+    MOV     R12, R0
+    AI      R0, TILE_BELOW
+    CALL    @DetonateBigExplosion
+    RET
+
+!notMurphy:
+    ; --- SnikSnak → big explosion ---
+    CI      R3, TYPE_SNIK_SNAK
+    JNE     +!notSnik
+
+    MOV     R12, R0
+    AI      R0, TILE_BELOW
+    CALL    @DetonateBigExplosion
+    RET
+
+!notSnik:
+    ; --- Electron → big explosion ---
+    CI      R3, TYPE_ELECTRON
+    JNE     +!notElectron
+    MOV     R12, R0
+    AI      R0, TILE_BELOW
+    CALL    @DetonateBigExplosion
+    RET
+
+!notElectron:
+    ; --- OrangeDisk at state 0 → queue explosion via timer ---
+    CI      R3, TYPE_DISK_ORANGE
+    JNE     +!notOrange
+    MOVB    @SW_BELOW(R12), R0          ; R0 high = OrangeDisk state
+    JNE     +!notOrange
+    MOV     R12, R0
+    AI      R0, TILE_BELOW
+    LI      R1, EXPL_FUSE_FRAMES
+    CALL    @AddExplosionTimer
+    RET
+
+!notOrange:
+    ; --- Round tile below → check cascade ---
+    MOV     R3, R9                      ; copy tile ID to indexable register
+    MOVB    @IS_ROUND_TABLE(R9), R2
+    JEQ     +!landingDone
+
+    CALL    @FallingCascadeCheck
+
+!landingDone:
+    RET
+
+; =============================================================================
+; FallingCascadeCheck
+; -----------------------------------------------------------------------------
+; Called when this object (R12) just landed on a round tile.
+; Checks if round objects resting above-left or above-right can now roll
+; because our position is no longer blocking them.
+;
+; above-left round at rest + left-of-current round at rest → roll right (>60)
+; above-right round at rest + right-of-current round at rest → roll left (>50)
+; =============================================================================
+
+FallingCascadeCheck:
+    ; --- Check above-left ---
+    CLR     R0
+    MOVB    @LW_ABOVE_LEFT(R12), R0     ; R0 = [AboveLeftTileId:0]
+    JEQ     +!checkAboveRight           ; above-left empty
+
+    MOV     R0, R9
+    SRL     R9, 8                       ; R9 = tile ID in low byte
+    MOVB    @SW_ABOVE_LEFT(R12), R0     ; R2 = state
+    JNE     +!checkAboveRight           ; above-left not at rest
+
+    MOVB    @IS_ROUND_TABLE(R9), R0
+    JEQ     +!checkAboveRight           ; above-left not round
+
+    ; above-left is round at rest. Check that left-of-current is also round at rest
+    ; (provides the surface from which above-left can roll rightward).
+    MOVB    @LW_LEFT(R12), R0
+    JEQ     +!checkAboveRight           ; left is empty, no surface
+
+    MOV     R0, R9
+    SRL     R9, 8
+    MOVB    @IS_ROUND_TABLE(R9), R0
+    JEQ     +!checkAboveRight           ; left tile not round
+
+    CI      R9, TYPE_RAM_CHIP           ; chips always at rest (state = variant, not animation)
+    JEQ     +!leftAtRest
+    MOVB    @SW_LEFT(R12), R0
+    JNE     +!checkAboveRight           ; left tile not at rest
+!leftAtRest:
+
+    ; Verify TILE_ABOVE is empty before triggering (can't roll if occupied)
+    MOVB    @LW_ABOVE(R12), R0
+    JNE     +!checkAboveRight           ; destination occupied, skip cascade
+
+    ; Trigger cascade: above-left starts rolling RIGHT (state >60)
+    LI      R0, >6000
+    MOVB    R0, @SW_ABOVE_LEFT(R12)
+    LI      R0, >8888
+    MOV     R0, @LW_ABOVE(R12)
+    JMP     +!checkAboveRight
+
+    ; --- Check above-right ---
+!checkAboveRight:
+    MOVB    @LW_ABOVE_RIGHT(R12), R0
+    JEQ     +!cascadeDone
+
+    MOV     R0, R9
+    SRL     R9, 8
+    MOVB    @SW_ABOVE_RIGHT(R12), R0
+    JNE     +!cascadeDone
+
+    MOVB    @IS_ROUND_TABLE(R9), R0
+    JEQ     +!cascadeDone
+
+    ; above-right round at rest. Check right-of-current is round at rest.
+    MOVB    @LW_RIGHT(R12), R0
+    JEQ     +!cascadeDone
+
+    MOV     R0, R9
+    SRL     R9, 8
+    MOVB    @IS_ROUND_TABLE(R9), R0
+    JEQ     +!cascadeDone
+
+    CI      R9, TYPE_RAM_CHIP
+    JEQ     +!rightAtRest
+    MOVB    @SW_RIGHT(R12), R0
+    JNE     +!cascadeDone               ; right tile not at rest
+!rightAtRest:
+
+    ; Verify TILE_ABOVE is empty before triggering (can't roll if occupied)
+    MOVB    @LW_ABOVE(R12), R0
+    JNE     +!cascadeDone               ; destination occupied, skip cascade
+
+    ; Trigger cascade: above-right starts rolling LEFT (state >50)
+    LI      R0, >5000
+    MOVB    R0, @SW_ABOVE_RIGHT(R12)
+    LI      R0, >8888
+    MOV     R0, @LW_ABOVE(R12)
+
+!cascadeDone:
+    RET

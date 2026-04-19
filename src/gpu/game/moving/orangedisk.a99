@@ -1,0 +1,52 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; ORANGE DISK — Falling object (no rolling, always explodes on landing)
+; -----------------------------------------------------------------------------
+; Orange disk falls straight down under gravity. It does NOT roll off round
+; objects. When it lands on any occupied (non-explosion) tile it detonates.
+;
+; DO NOT TOUCH: R12, R13
+; R12 = current tile location in LEVEL_WORKING table
+; R14 = Current tile ID and status
+; =============================================================================
+
+; =============================================================================
+; ENTRY POINT
+; =============================================================================
+
+UpdateOrangeDisk:
+    LI      R0, ORANGEDISK_CONFIG
+    B       @UpdateFalling
+
+; =============================================================================
+; CONFIGURATION
+; =============================================================================
+
+ORANGEDISK_CONFIG:
+    DATA    (TYPE_DISK_ORANGE << 8) | FLAG_NO_ROLL  ; tile type, cannot roll
+    DATA    +!getOrangeDiskSpriteData                ; sprite lookup function
+
+; =============================================================================
+; getOrangeDiskSpriteData
+; -----------------------------------------------------------------------------
+; Returns the sprite pattern:attributes for an Orange Disk.
+;
+; Input:  (none)
+; Output: R2 = pattern:attributes
+; Modifies: R2
+; =============================================================================
+
+!getOrangeDiskSpriteData:
+    LI      R2, >C006                   ; pattern 192, palette 6
+    RT

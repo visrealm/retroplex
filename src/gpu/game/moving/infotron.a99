@@ -1,0 +1,53 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; =============================================================================
+; INFOTRON — Falling/rolling object
+; -----------------------------------------------------------------------------
+; Infotron is a round collectible that falls under gravity and rolls off other
+; round objects (Zonk, Infotron, Chip). Collected by Murphy to satisfy the
+; infotron quota required to open the exit.
+;
+; DO NOT TOUCH: R12, R13
+; R12 = current tile location in LEVEL_WORKING table
+; R14 = Current tile ID and status
+; =============================================================================
+
+; =============================================================================
+; ENTRY POINT
+; =============================================================================
+
+UpdateInfotron:
+    LI      R0, INFOTRON_CONFIG
+    B       @UpdateFalling
+
+; =============================================================================
+; CONFIGURATION
+; =============================================================================
+
+INFOTRON_CONFIG:
+    DATA    (TYPE_INFOTRON << 8) | FLAG_CAN_ROLL ; tile type, can roll
+    DATA    +!getInfotronSpriteData               ; sprite lookup function
+
+; =============================================================================
+; getInfotronSpriteData
+; -----------------------------------------------------------------------------
+; Returns the sprite pattern:attributes for an Infotron.
+;
+; Input:  (none)
+; Output: R2 = pattern:attributes
+; Modifies: R2
+; =============================================================================
+
+!getInfotronSpriteData:
+    LI      R2, >F006                   ; pattern 240, palette 6
+    RT

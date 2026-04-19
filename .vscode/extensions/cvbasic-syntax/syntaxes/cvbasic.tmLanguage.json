@@ -1,0 +1,134 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "CVBasic",
+  "scopeName": "source.cvbasic",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#labels" },
+    { "include": "#preprocessor" },
+    { "include": "#keywords" },
+    { "include": "#functions" },
+    { "include": "#operators" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.apostrophe.cvbasic",
+          "begin": "'",
+          "end": "$",
+          "patterns": [
+            {
+              "name": "keyword.todo.cvbasic",
+              "match": "\\b(TODO|FIXME|HACK|BUG|XXX|NOTE)\\b:?"
+            }
+          ]
+        },
+        {
+          "name": "comment.line.rem.cvbasic",
+          "begin": "(?i)\\bREM\\b",
+          "end": "$",
+          "patterns": [
+            {
+              "name": "keyword.todo.cvbasic",
+              "match": "\\b(TODO|FIXME|HACK|BUG|XXX|NOTE)\\b:?"
+            }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.cvbasic",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.cvbasic",
+              "match": "\\\\(\\d{1,3}|\\\"|\\\\)"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.cvbasic", "match": "\\$[0-9A-Fa-f]+" },
+        { "name": "constant.numeric.binary.cvbasic", "match": "&[01]+" },
+        { "name": "constant.numeric.decimal.cvbasic", "match": "\\b\\d+\\.?\\b" }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        {
+          "name": "entity.name.function.label.cvbasic",
+          "match": "(?i)^(\\s*)(\\.?[A-Za-z#][A-Za-z0-9_]*)\\s*:"
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "keyword.control.preprocessor.cvbasic",
+          "match": "(?i)^(\\s*)#(IF|ELIF|ELSE|ENDIF|INFO|WARN|ERROR)\\b"
+        },
+        {
+          "name": "constant.language.preprocessor.cvbasic",
+          "match": "(?i)\\b(COLECOVISION|SG1000|MSX|SGM|SVI|SORD|MEMOTECH|CREATIVISION|PENCIL|EINSTEIN|PV2000|TI994A|NABU|SMS)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.cvbasic",
+          "match": "(?i)\\b(REM|SIGNED|UNSIGNED|CONST|GOTO|GOSUB|PROCEDURE|RETURN|FOR|TO|STEP|NEXT|WHILE|WEND|DO|LOOP|UNTIL|EXIT|IF|THEN|ELSE|ELSEIF|END|ON|FAST|SELECT|CASE|FRAME|POKE|VPOKE|WAIT|OPTION|WARNINGS|EXPLICIT|DIM|RESTORE|READ|DATA|DEFINE|CHAR|COLOR|SPRITE|VRAM|SOUND|OUT|CLS|PRINT|AT|CHR\\$|BORDER|SCROLL|PALETTE|MODE|SCREEN|BITMAP|PLAY|DEF|FN|INCLUDE|VDP|CALL|BANK|ROM)\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.cvbasic",
+          "match": "(?i)\\b(PEEK|VPEEK|ABS|SGN|USR|VARPTR|RANDOM|LEN|POS|INP)\\b"
+        },
+        {
+          "name": "variable.language.cvbasic",
+          "match": "(?i)\\b(CONT|CONT1|CONT2|NTSC|FRAME|MUSIC\\.PLAYING|VDP\\.STATUS)\\b"
+        },
+        {
+          "name": "variable.language.cvbasic",
+          "match": "(?i)\\b(CONT(1|2)?\\.(UP|DOWN|LEFT|RIGHT|BUTTON2?|KEY))\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.cvbasic",
+          "match": "(?i)\\b(AND|OR|XOR|NOT)\\b"
+        },
+        {
+          "name": "keyword.operator.comparison.cvbasic",
+          "match": "<>|<=|>=|=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.cvbasic",
+          "match": "\\+|\\-|\\*|/|%"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.cvbasic",
+          "match": "(?i)\\b#?[A-Za-z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

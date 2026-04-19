@@ -1,0 +1,122 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+TIME_TICKS          BSS 2
+TIME_SEC            BSS 2
+TIME_MIN            BSS 2
+TIME_HOUR           BSS 2
+NUM_BUFFER          BSS 4               ; Shared buffer for 2-3 digit display
+
+TIME_TEXT_STRUCT:
+    BYTE    0, TIME_Y
+    DATA    NUM_BUFFER
+    BYTE    >02, >40
+
+INFO_TEXT_STRUCT:
+    BYTE    0, INFO_Y
+    DATA    NUM_BUFFER
+    BYTE    >03, >40
+
+InitTime:
+    CLR     @TIME_TICKS
+    CLR     @TIME_SEC
+    CLR     @TIME_MIN
+    CLR     @TIME_HOUR
+    RET
+
+IncTime:
+    INC     *R0
+    C       *R0, R1
+    JNE     +!done
+    CLR     *R0+
+    JMP     IncTime
+!done:
+    RET
+
+UpdateStatusBar:
+    CALL    @UpdateInfotrons
+    JMP     UpdateTime
+
+; Convert number to ASCII digits (itoa)
+; R1 = X position << 8, R2 = value, R3 = digit count
+ConvertNum:
+    MOVB    R1, @BMP_X
+    MOV     R3, R4
+    AI      R4, NUM_BUFFER              ; R4 = end of digit area
+    MOV     R3, R5                      ; R5 = loop counter
+    LI      R0, 10
+!nextDigit:
+    DEC     R4                          ; Move to digit position (right to left)
+    MOV     R2, R3                      ; Value to R3 (low word)
+    CLR     R2                          ; Clear high word
+    DIV     R0, R2                      ; R2 = quotient, R3 = remainder
+    AI      R3, '0'                     ; Convert to ASCII
+    SLA     R3, 8                       ; Move to high byte for MOVB
+    MOVB    R3, *R4                     ; Store digit
+    DEC     R5
+    JNE     -!nextDigit
+    RET
+
+; Decrement infotron count and render
+DecInfotronCount:
+    MOV     @INFOTRON_COUNT, R0
+    JEQ     +!done
+    DEC     @INFOTRON_COUNT
+!done:
+    RET
+
+UpdateInfotrons:
+    LI      R0, INFO_TEXT_STRUCT
+    LI      R1, BMP_X
+    MOV     *R0+, *R1+
+    MOV     *R0+, *R1+
+    MOV     *R0+, *R1+
+    LI      R1, INFO_X
+    MOV     @INFOTRON_COUNT, R2
+    LI      R3, 3
+    CALL    @ConvertNum
+    CALL    @RenderText
+    RET
+
+UpdateTime:
+    LI      R0, TIME_TICKS
+    LI      R1, 60
+    CALL    @IncTime
+    CI      R0, TIME_TICKS
+    JEQ     +!done
+
+    LI      R0, TIME_TEXT_STRUCT
+    LI      R1, BMP_X
+    MOV     *R0+, *R1+
+    MOV     *R0+, *R1+
+    MOV     *R0+, *R1+
+
+    LI      R1, TIME_HOURS_X
+    MOV     @TIME_HOUR, R2
+    LI      R3, 2
+    CALL    @ConvertNum
+    CALL    @RenderText
+
+    LI      R1, TIME_MINUTES_X
+    MOV     @TIME_MIN, R2
+    LI      R3, 2
+    CALL    @ConvertNum
+    CALL    @RenderText
+
+    LI      R1, TIME_SECONDS_X
+    MOV     @TIME_SEC, R2
+    LI      R3, 2
+    CALL    @ConvertNum
+    CALL    @RenderText
+
+!done:
+    RET

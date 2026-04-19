@@ -1,0 +1,79 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+; -----------------------
+; Update a Bug
+;------------------------
+UpdateBug:
+    LI      R0, >1900
+    CB      R0, R14
+    JNE     +!done
+
+!validTileId:
+    MOV     @FRAME_COUNTER, R2
+    ANDI    R2, >0003                   ; R2 = lower 2 bits (0-3) of frame counter
+    JNE     +!done                      ; 0? render new frame
+
+    MOV     R14, R1                     ; get tileid and state
+    INC     R1                          ; increment state
+    SLA     R1, 8                       ; move to high byte for tile ID
+    CI      R1, >E00
+    JLT     +!updateState
+
+    CALL    @generateRandomNumber
+    ANDI    R1, >3F
+    AI      R1, >20
+    NEG     R1
+    SLA     R1, 8
+
+!updateState:
+    MOVB    R1, @STATUS_WORKING(R12)    ; update status
+    JLT     +!done
+
+    LI      R0, >0300                   ; Murphy ID
+    LI      R2, 8 << 1
+
+    SRL     R1, 8
+!loop:
+    MOV     @BUG_TEST_DIRECTIONS(R1), R0 ; All 8 offsets
+    CB      R0, R1
+    JEQ     +!playBugSound
+    DECT    R2
+    JNE     -!loop
+
+!updateTile:
+    LI      R5, >0002                   ; palette
+    MOVB    @BUG_ANIM(R1), R5           ; anim tile
+    CALL    @RenderTempTile
+!done:
+    RT
+
+!playBugSound:
+    JMP     -!updateTile
+
+BUG_ANIM:
+    BYTE    172 >> 2                    ; 1
+    BYTE    164 >> 2                    ; 2
+    BYTE    168 >> 2                    ; 3
+    BYTE    176 >> 2                    ; 4
+    BYTE    180 >> 2                    ; 5
+    BYTE    176 >> 2                    ; 4
+    BYTE    168 >> 2                    ; 3
+    BYTE    176 >> 2                    ; 4
+    BYTE    180 >> 2                    ; 5
+    BYTE    176 >> 2                    ; 4
+    BYTE    168 >> 2                    ; 3
+    BYTE    164 >> 2                    ; 2
+    BYTE    172 >> 2                    ; 1
+    BYTE    008 >> 2                    ; 0
+    BYTE    008 >> 2                    ; 0
+    BYTE    008 >> 2                    ; 0

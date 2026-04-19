@@ -1,0 +1,159 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+    COPY    "moving/murphy.a99"
+    COPY    "moving/enemies.a99"
+    COPY    "moving/sniksnak.a99"
+    COPY    "moving/electron.a99"
+    COPY    "moving/bug.a99"
+    COPY    "moving/falling.a99"
+    COPY    "moving/zonk.a99"
+    COPY    "moving/infotron.a99"
+    COPY    "moving/orangedisk.a99"
+    COPY    "moving/explosion.a99"
+
+; =============================================================================
+; GAME OBJECT PROCESSING
+; -----------------------------------------------------------------------------
+GenerateMovingObjectList:
+  .ifne SHOW_PROCESSING
+    LI      R0, >DD00
+    MOVB    R0, @VREG + 7
+  .endif
+
+    ; === Phase 1: Build processing list ===
+    ; Pre-scan all tiles to avoid double-processing when objects move down/right
+    LI      R8, PROCESS_LIST            ; List pointer
+    LI      R12, LEVEL_WORKING + SRC_W_WORKING ; Start offset (skip first row)
+    LI      R13, SRC_W * (SRC_H - 2)    ; Number of rows to process
+    LI      R11, 32 << 8
+
+!scanLoop:
+    MOV     *R12+, R14
+    CB      R14, R11                    ; Bounds check tile ID (in high byte)
+    JHE     +!scanNext                  ; Skip if > 31
+
+    SRL     R14, 8                      ; Move tile ID to low byte
+    MOVB    @MOVING_FUNCTIONS_IDS(R14), R1
+    JEQ     +!scanNext                  ; Skip if no handler
+
+    ; Add to list
+    MOV     R12, R2
+    AI      R2, -(LEVEL_WORKING + 2)
+    SOCB    R1, R2                      ; Combine offset and function into one word    
+    MOV     R2, *R8+                    ; Store moving index and offset function
+
+!scanNext:
+    DEC     R13
+    JNE     -!scanLoop
+    CLR     *R8                         ; Mark end of list
+
+  .ifne SHOW_PROCESSING
+    CLR     R0                          ; reset background for profiling
+    MOVB    R0, @VREG + 7
+  .endif
+    RET
+
+ProcessMovingObjectList:
+
+  .ifne SHOW_PROCESSING
+    SETO    R0                          ; set background white for profiling
+    MOVB    R0, @VREG + 7
+  .endif
+
+    ; === Phase 2: Process list ===
+    LI      R13, PROCESS_LIST           ; Reset list pointer
+
+!processLoop:
+    MOV     *R13+, R1                   ; Get next moving function
+    JEQ     +!done
+
+    ; R1 - top nibble (12-15) is moving function offset into MOVING_FUNCTIONS,
+    ;      lower bits (0-11) is tile offset from LEVEL_WORKING
+    MOV     R1, R12
+    ANDI    R12, >FFF
+    SRL     R1, 12                      ; Get function offset
+    MOV     @MOVING_FUNCTIONS(R1), R1   ; Get function address
+    MOV     @LEVEL_WORKING(R12), R14
+    BL      *R1                         ; Call handler
+    JMP     -!processLoop
+
+!done:
+
+  .ifne SHOW_PROCESSING
+    CLR     R0                          ; reset background for profiling
+    MOVB    R0, @VREG + 7
+  .endif
+    RET
+
+NULL                EQU 0
+
+    EVEN
+MOVING_FUNCTIONS:
+    DATA    NULL
+FN_SNIK:
+    DATA    UpdateSnikSnak
+FN_ELECTRON:
+    DATA    UpdateElectron
+FN_BUG:
+    DATA    UpdateBug
+FN_ZONK:
+    DATA    UpdateZonk
+FN_INFOTRON:
+    DATA    UpdateInfotron
+FN_ORANGEDISK:
+    DATA    UpdateOrangeDisk
+FN_EXPLOSION:
+    DATA    UpdateExplosion
+
+; moving function helper
+  .defm movefn
+  .ifeq #1
+    BYTE    NULL
+  .else
+    BYTE    (#1 - MOVING_FUNCTIONS) << 4
+  .endif
+  .endm
+
+MOVING_FUNCTIONS_IDS:
+  .movefn NULL                          ; 0  - Empty
+  .movefn FN_ZONK                       ; 1  - Zonk
+  .movefn NULL                          ; 2  - Base
+  .movefn NULL                          ; 3  - Murphy (handled separately)
+  .movefn FN_INFOTRON                   ; 4  - Infotron
+  .movefn NULL                          ; 5  - Chip (static)
+  .movefn NULL                          ; 6  - Hardware
+  .movefn NULL                          ; 7  - Exit
+  .movefn FN_ORANGEDISK                 ; 8  - Orange Disk
+  .movefn NULL                          ; 9  - Port Right
+  .movefn NULL                          ; 10 - Port Down
+  .movefn NULL                          ; 11 - Port Left
+  .movefn NULL                          ; 12 - Port Up
+  .movefn NULL                          ; 13 - Sport Right
+  .movefn NULL                          ; 14 - Sport Down
+  .movefn NULL                          ; 15 - Sport Left
+  .movefn NULL                          ; 16 - Sport Up
+  .movefn FN_SNIK                       ; 17 - Snik-Snak
+  .movefn NULL                          ; 18 - Yellow Disk
+  .movefn NULL                          ; 19 - Terminal (animation only)
+  .movefn NULL                          ; 20 - Red Disk
+  .movefn NULL                          ; 21 - Port Vertical
+  .movefn NULL                          ; 22 - Port Horizontal
+  .movefn NULL                          ; 23 - Port 4-Way
+  .movefn FN_ELECTRON                   ; 24 - Electron
+  .movefn FN_BUG                        ; 25 - Bug
+  .movefn NULL                          ; 26 - Chip Left
+  .movefn NULL                          ; 27 - Chip Right
+  .movefn NULL                          ; 28 - Hardware variants...
+  .movefn NULL                          ; 29
+  .movefn NULL                          ; 30
+  .movefn FN_EXPLOSION                  ; 31 - Explosion          

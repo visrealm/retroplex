@@ -1,0 +1,17 @@
+;
+; Project: retroplex
+;
+; RetroPLEX - A Supaplex clone for retro computers
+;
+; Copyright (c) 2026 Troy Schrapel
+;
+; This code is licensed under the MIT license
+;
+; https://github.com/visrealm/retroplex
+;
+
+    AORG    >3F00
+
+gpuDetect:
+    CLR     @>3F00
+    IDLE

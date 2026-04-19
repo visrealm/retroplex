@@ -1,0 +1,43 @@
+{
+  "name": "cvbasic-syntax",
+  "displayName": "CVBasic Syntax",
+  "description": "Syntax highlighting for CVBasic",
+  "version": "0.1.1",
+  "publisher": "visrealm",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cvbasic",
+        "aliases": ["CVBasic", "cvbasic"],
+        "extensions": [".bas", ".cvb"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cvbasic",
+        "scopeName": "source.cvbasic",
+        "path": "./syntaxes/cvbasic.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": "keyword.todo.cvbasic",
+            "settings": {
+              "foreground": "#FF8C00",
+              "fontStyle": "bold"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
