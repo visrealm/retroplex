@@ -26,6 +26,10 @@ The original F18A is not currently supported - it does not have enough VRAM to h
 
 [![RetroPLEX gameplay](https://img.visualrealmsoftware.com/youtube/thumb/A4wrG8Qgm84)](https://youtu.be/A4wrG8Qgm84)
 
+### Play online
+
+You can play the latest build for the TI-99/4A (with PICO9918) online courtesy of JS99'er: [RetroPLEX on JS99'er](https://js99er.visrealm.au/#/?cart=software/retroplex-8.bin)
+
 ## How it works
 
 RetroPLEX loads the original Supaplex `LEVELS.DAT` and runs the game engine on the enhanced VDP's GPU. The host CPU (TMS9900, Z80, or 6502, depending on target) is used primarily for orchestration, audio, and I/O. Rendering, scrolling, and enemy logic run as TMS9900 assembly executing in VRAM on the GPU itself - that code is portable across hosts because it runs on the VDP.
