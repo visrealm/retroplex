@@ -2,3 +2,4 @@
 **/*.bas linguist-language=Basic
 
 src/pletter/** linguist-vendored
+res/** linguist-vendored
