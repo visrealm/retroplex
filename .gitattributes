@@ -1,2 +1,4 @@
 *.a99 linguist-language=Assembly
 *.bas linguist-language=Basic
+src/pletter/*.bas linquist-generated
+*.pletter.bas linquist-generated
