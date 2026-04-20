@@ -1,4 +1,4 @@
-src/pletter/** linquist-vendored
+src/pletter/* linquist-vendored
 
 **/*.a99 linguist-language=Assembly
 **/*.bas linguist-language=Basic
