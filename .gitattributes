@@ -1,6 +1,6 @@
 **/*.a99 linguist-language=Assembly
 **/*.bas linguist-language=Basic
 
-src/pletter/** linguist-vendored
+#src/pletter/** linguist-vendored
 res/** linguist-vendored
 
