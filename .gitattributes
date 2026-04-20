@@ -1,2 +1,2 @@
-*.a99 linguist-language=TMS9900 Assembly
-*.bas linguist-language=CVBasic
+*.a99 linguist-language=Assembly
+*.bas linguist-language=Basic
