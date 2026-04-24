@@ -340,21 +340,6 @@ def allocateDataToBanks(compressedBlocks, bank0_labels, bank_size, start_bank=1)
     return banks
 
 
-def truncateBlocks(compressedBlocks, keep_labels, max_labels):
-    """Return a new dict containing keep_labels (header/titles in bank 0) plus
-    the first max_labels remaining blocks, preserving insertion order."""
-    keep_set = set(keep_labels)
-    result = {}
-    remaining = max_labels
-    for label, data in compressedBlocks.items():
-        if label in keep_set:
-            result[label] = data
-        elif remaining > 0:
-            result[label] = data
-            remaining -= 1
-    return result
-
-
 def writeFinalBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, has_chunks=False):
     """generates the output .pletter.bas with compressed data blocks."""
 
@@ -420,22 +405,6 @@ def writeFinalBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, has_ch
                 count = base_label_chunks[base_label]
                 f.write(f"    DATA {count} ' {base_label}\n")
             f.write(f"  {baseCamelName}ChunkCountEnd:\n\n")
-        elif len(compressedBlocks) > 1:
-            # Multi-label file without chunking: emit label catalogue + zeroed
-            # Banks array so code written for the banked path works unchanged
-            # on non-banked targets (bank select becomes a no-op).
-            all_labels = list(compressedBlocks.keys())
-
-            f.write(f"  #{baseCamelName}Catalogue:\n")
-            for label in all_labels:
-                pletter_label = _format_pletter_label(label, "Pletter")
-                f.write(f"    DATA VARPTR {pletter_label}(0)\n")
-            f.write(f"  {baseCamelName}CatalogueEnd:\n\n")
-
-            f.write(f"  {baseCamelName}Banks:\n")
-            for label in all_labels:
-                f.write(f"    DATA BYTE 0 ' {label}\n")
-            f.write(f"  {baseCamelName}BanksEnd:\n\n")
 
         for label, compressed in compressedBlocks.items():
             inSize = sourceSizes[label]
@@ -459,66 +428,107 @@ def writeFinalBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, has_ch
     print(f"{basOutputFile:<27} - in: {str(totalSourceBytes) + 'B':>6} - out: {str(totalCompressedBytes) + 'B':>6} - saved: {str(totalSourceBytes - totalCompressedBytes)+ 'B':>6}\n")
 
 
-def writeBankedBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, bank0_labels, bank_size, bank_size_name, start_bank=1):
-    """Generates output .pletter.bas with banking support."""
-
-    # Allocate data to banks
-    banks = allocateDataToBanks(compressedBlocks, bank0_labels, bank_size, start_bank)
-
+def _writeBankFile(path, header_lines, bank_num, bank_blocks, sourceSizes, emit_bank_directive):
+    """Writes a single per-bank data file. Returns (source_bytes, compressed_bytes)."""
     totalSourceBytes = 0
     totalCompressedBytes = 0
+
+    with open(path, 'w') as f:
+        for line in header_lines:
+            f.write(line)
+
+        if emit_bank_directive:
+            f.write(f"BANK {bank_num}\n\n")
+
+        for label, compressed in bank_blocks:
+            inSize = sourceSizes[label]
+            outSize = len(compressed)
+            totalSourceBytes += inSize
+            totalCompressedBytes += outSize
+
+            start_label = _format_pletter_label(label, "Pletter")
+            end_label = _format_pletter_label(label, "PletterEnd")
+
+            f.write(f"  {start_label}: ' source: {inSize} bytes. compressed: {outSize} bytes\n")
+            for i in range(0, outSize, 8):
+                group = compressed[i:i+8]
+                line = ', '.join(f"${b:02x}" for b in group)
+                f.write(f"    DATA BYTE {line}\n")
+            f.write(f"  {end_label}:\n")
+            f.write("\n")
+
+            print(f"  Bank {bank_num}: {start_label + ':':<20} - in: {str(inSize) + 'B':>6} - out: {str(outSize) + 'B':>6} - saved: {str(inSize - outSize)+'B':>6}")
+
+    return totalSourceBytes, totalCompressedBytes
+
+
+def writeBankedBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, bank0_labels, bank_size, bank_size_name, start_bank=1):
+    """Generates output .pletter.bas with banking support.
+
+    Emits one file per bank (.b0.bas, .b<N>.bas, ...) plus a wrapper
+    (the basOutputPath itself) that INCLUDEs every per-bank file in order.
+    Bank 0's file contains the label catalogue, Banks table, and any bank-0
+    payload; subsequent banks contain their labels preceded by BANK <n>.
+    """
+
+    banks = allocateDataToBanks(compressedBlocks, bank0_labels, bank_size, start_bank)
+
     basOutputPath = Path(basOutputPath)
     basOutputFile = basOutputPath.name
     baseFileName = inputBas.stem
     baseCamelName = _to_camel(baseFileName)
     generated_at = datetime.now().isoformat(timespec="seconds")
 
-    # Build label catalogue and bank mapping
+    # Derive variant suffix (e.g. "_8k" from "foo.pletter_8k.bas"); used in per-bank filenames
+    stem_parts = basOutputPath.stem.split('.')
+    if len(stem_parts) > 1 and stem_parts[-1].startswith('pletter'):
+        variant = stem_parts[-1][7:]
+    else:
+        variant = ""
+
+    # Build label catalogue and bank mapping (in emission order)
     all_labels = []
     label_to_bank = {}
-
     for bank_num in sorted(banks.keys()):
         for label, data in banks[bank_num]:
             all_labels.append(label)
             label_to_bank[label] = bank_num
 
-    # Write bank 0 file (always, even if no bank 0 data)
-    # Determine bank 0 output path
-    # Extract variant suffix (e.g., "_8k" from "levels.pletter_8k.bas")
-    stem_parts = basOutputPath.stem.split('.')
-    if len(stem_parts) > 1 and stem_parts[-1].startswith('pletter'):
-        # Has variant like "pletter_8k"
-        variant = stem_parts[-1][7:]  # Get everything after "pletter"
-        bank0_path = basOutputPath.parent / f"{baseFileName}.pletter{variant}.b0.bas"
-    else:
-        # No variant
-        bank0_path = basOutputPath.parent / f"{baseFileName}.pletter.b0.bas"
+    def bank_path(bank_num):
+        return basOutputPath.parent / f"{baseFileName}.pletter{variant}.b{bank_num}.bas"
 
+    # Header lines reused for every per-bank file
+    def make_header(bank_num, path):
+        return [
+            "' ====================================================\n",
+            "' This file was generated using cvpletter.py\n",
+            f"' Bank {bank_num} data file\n",
+            "' \n",
+            "' Copyright (c) 2026 Troy Schrapel (visrealm)\n",
+            "' \n",
+            f"' generated: {generated_at}\n",
+            f"' source: {inputBas}\n",
+            f"' bank size: {bank_size_name}\n",
+            f"' cmd:    python cvpletter.py {inputBas}\n",
+            f"' output: {path.name}\n",
+            "' \n",
+            "' ====================================================\n",
+            "' WARNING! Do NOT edit this file. Edit source file\n",
+            "' ====================================================\n\n",
+        ]
+
+    # --- Bank 0 file: catalogue + Banks table + bank-0 payload ---
+    bank0_path = bank_path(0)
     with open(bank0_path, 'w') as f:
-        f.write("' ====================================================\n")
-        f.write("' This file was generated using cvpletter.py\n")
-        f.write("' Bank 0 data file\n")
-        f.write("' \n")
-        f.write("' Copyright (c) 2026 Troy Schrapel (visrealm)\n")
-        f.write("' \n")
-        f.write(f"' generated: {generated_at}\n")
-        f.write(f"' source: {inputBas}\n")
-        f.write(f"' bank size: {bank_size_name}\n")
-        f.write(f"' cmd:    python cvpletter.py {inputBas}\n")
-        f.write(f"' output: {bank0_path.name}\n")
-        f.write("' \n")
-        f.write("' ====================================================\n")
-        f.write("' WARNING! Do NOT edit this file. Edit source file\n")
-        f.write("' ====================================================\n\n")
+        for line in make_header(0, bank0_path):
+            f.write(line)
 
-        # Write source size constants
         for label in all_labels:
             inSize = sourceSizes[label]
             constantName = _to_upper_snake(label)
             f.write(f"  CONST {constantName}_SRC_SIZE = {inSize}\n")
         f.write("\n")
 
-        # Write catalogue
         f.write(f"  #{baseCamelName}Catalogue:\n")
         for label in all_labels:
             pletter_label = _format_pletter_label(label, "Pletter")
@@ -527,12 +537,14 @@ def writeBankedBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, bank0
 
         f.write(f"  {baseCamelName}Banks:\n")
         for label in all_labels:
-            bank_num = label_to_bank[label]
-            f.write(f"    DATA BYTE {bank_num} ' {label}\n")
+            f.write(f"    DATA BYTE {label_to_bank[label]} ' {label}\n")
         f.write(f"  {baseCamelName}BanksEnd:\n\n")
 
-        # Write bank 0 data if any
-        if 0 in banks and banks[0]:
+    totalSourceBytes = 0
+    totalCompressedBytes = 0
+
+    if 0 in banks and banks[0]:
+        with open(bank0_path, 'a') as f:
             for label, compressed in banks[0]:
                 inSize = sourceSizes[label]
                 outSize = len(compressed)
@@ -552,76 +564,43 @@ def writeBankedBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, bank0
 
                 print(f"  Bank 0: {start_label + ':':<20} - in: {str(inSize) + 'B':>6} - out: {str(outSize) + 'B':>6} - saved: {str(inSize - outSize)+'B':>6}")
 
-    print(f"  -> {bank0_path.name}\n")
+    print(f"  -> {bank0_path.name}")
 
-    # Write main banked file
+    # --- Per-bank files for banks >= start_bank ---
+    # Files do NOT emit their own `BANK N` directive; the wrapper emits it
+    # before the include. This lets non-banked targets include the same
+    # per-bank files (from a different wrapper) without a `BANK` directive.
+    non_zero_banks = [b for b in sorted(banks.keys()) if b != 0]
+    for bank_num in non_zero_banks:
+        path = bank_path(bank_num)
+        src, comp = _writeBankFile(path, make_header(bank_num, path), bank_num, banks[bank_num], sourceSizes, emit_bank_directive=False)
+        totalSourceBytes += src
+        totalCompressedBytes += comp
+        print(f"  -> {path.name}")
+
+    # The caller is responsible for including the per-bank files in the
+    # right place (bank 0 in bank-0 position, later banks in their positions)
+    # and emitting the BANK directive for each. The wrapper file is written
+    # purely as a manifest so downstream tools / CMake can treat it as the
+    # primary output.
     with open(basOutputPath, 'w') as f:
-        f.write("' ====================================================\n")
-        f.write("' This file was generated using cvpletter.py\n")
-        f.write("' with banking support\n")
-        f.write("' \n")
-        f.write("' Copyright (c) 2026 Troy Schrapel (visrealm)\n")
-        f.write("' \n")
-        f.write(f"' generated: {generated_at}\n")
-        f.write(f"' source: {inputBas}\n")
-        f.write(f"' bank size: {bank_size_name}\n")
-        f.write(f"' starting bank: {start_bank}\n")
-        f.write(f"' cmd:    python cvpletter.py {inputBas}\n")
-        f.write(f"' output: {basOutputFile}\n")
-        f.write("' \n")
-        f.write("' ====================================================\n")
-        f.write("' WARNING! Do NOT edit this file. Edit source file\n")
-        f.write("' ====================================================\n\n")
-
-        # Write banks >= start_bank
-        for bank_num in sorted(banks.keys()):
-            if bank_num == 0:
-                continue
-
-            f.write(f"BANK {bank_num}\n\n")
-
-            for label, compressed in banks[bank_num]:
-                inSize = sourceSizes[label]
-                outSize = len(compressed)
-                totalSourceBytes += inSize
-                totalCompressedBytes += outSize
-
-                start_label = _format_pletter_label(label, "Pletter")
-                end_label = _format_pletter_label(label, "PletterEnd")
-
-                f.write(f"  {start_label}: ' source: {inSize} bytes. compressed: {outSize} bytes\n")
-                for i in range(0, outSize, 8):
-                    group = compressed[i:i+8]
-                    line = ', '.join(f"${b:02x}" for b in group)
-                    f.write(f"    DATA BYTE {line}\n")
-                f.write(f"  {end_label}:\n")
-                f.write("\n")
-
-                print(f"  Bank {bank_num}: {start_label + ':':<20} - in: {str(inSize) + 'B':>6} - out: {str(outSize) + 'B':>6} - saved: {str(inSize - outSize)+'B':>6}")
+        for line in make_header("manifest", basOutputPath):
+            f.write(line)
+        f.write(f"' Per-bank files produced for this variant:\n")
+        f.write(f"'   {bank0_path.name}   (bank 0: catalogue + bank-0 payload)\n")
+        for bank_num in non_zero_banks:
+            f.write(f"'   {bank_path(bank_num).name}   (bank {bank_num})\n")
 
     print(f"{basOutputFile:<27} - in: {str(totalSourceBytes) + 'B':>6} - out: {str(totalCompressedBytes) + 'B':>6} - saved: {str(totalSourceBytes - totalCompressedBytes)+ 'B':>6}")
     print(f"Total banks used: {len(banks)}\n")
 
 
 def main():
-    # Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir] [--max-labels N]
-    args = sys.argv[1:]
-
-    max_labels = None
-    # Extract --max-labels N (kept separate so it can appear anywhere)
-    filtered = []
-    i = 0
-    while i < len(args):
-        if args[i] == '--max-labels' and i + 1 < len(args):
-            max_labels = int(args[i + 1])
-            i += 2
-        else:
-            filtered.append(args[i])
-            i += 1
-    args = filtered
+    # Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir]
+    args = [a for a in sys.argv[1:] if a]
 
     if len(args) < 1 or len(args) > 3:
-        print("Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir] [--max-labels N]")
+        print("Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir]")
         sys.exit(1)
 
     inputBas = Path(args[0])
@@ -708,15 +687,6 @@ def main():
         print(f"Generating non-banked version: {outputBasPath.name}")
         writeFinalBas(inputBas, outputBasPath, compressedBlocks, sourceSizes, has_chunks)
 
-        if max_labels is not None:
-            # Keep the first label (e.g. levelTitles) unconditionally; count
-            # max_labels from the remaining labels.
-            first = next(iter(compressedBlocks))
-            reduced = truncateBlocks(compressedBlocks, [first], max_labels)
-            reducedPath = outputBasPath.parent / f"{outputBasPath.stem}_{max_labels}.bas"
-            print(f"Generating reduced non-banked version ({max_labels} labels): {reducedPath.name}")
-            writeFinalBas(inputBas, reducedPath, reduced, sourceSizes, has_chunks)
-
         # Generate 8KB version
         output8k = outputBasPath.parent / f"{outputBasPath.stem}_8k.bas"
         print(f"Generating 8KB bank version: {output8k.name}")
@@ -726,6 +696,11 @@ def main():
         output16k = outputBasPath.parent / f"{outputBasPath.stem}_16k.bas"
         print(f"Generating 16KB bank version: {output16k.name}")
         writeBankedBas(inputBas, output16k, compressedBlocks, sourceSizes, bank0_labels, 16384 - 48, "16KB", start_bank)
+
+        # Generate 32KB version (flat/non-banked targets consume the b0 file directly)
+        output32k = outputBasPath.parent / f"{outputBasPath.stem}_32k.bas"
+        print(f"Generating 32KB bank version: {output32k.name}")
+        writeBankedBas(inputBas, output32k, compressedBlocks, sourceSizes, bank0_labels, 32768 - 48, "32KB", start_bank)
     else:
         # Non-banked mode - original behavior
         # Determine final output path
@@ -739,12 +714,6 @@ def main():
         outputBasPath.parent.mkdir(parents=True, exist_ok=True)
 
         writeFinalBas(inputBas, outputBasPath, compressedBlocks, sourceSizes, has_chunks)
-
-        if max_labels is not None:
-            reduced = truncateBlocks(compressedBlocks, [], max_labels)
-            reducedPath = outputBasPath.parent / f"{outputBasPath.stem}_{max_labels}.bas"
-            print(f"Generating reduced non-banked version ({max_labels} labels): {reducedPath.name}")
-            writeFinalBas(inputBas, reducedPath, reduced, sourceSizes, has_chunks)
 
 if __name__ == '__main__':
     main()

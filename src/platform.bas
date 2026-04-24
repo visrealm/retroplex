@@ -21,11 +21,15 @@
   CONST BANK_SIZE                 = 16
 #elif NABU
   CONST BANK_SIZE                 = 0
-  CONST LEVEL_COUNT               = 48
+  CONST LEVEL_COUNT               = 83
 #else
   CONST BANK_SIZE                 = 0
 #endif
 
 #if NOT LEVEL_COUNT
   CONST LEVEL_COUNT               = 111
+#endif
+
+#if BANK_SIZE
+BANK ROM 128
 #endif

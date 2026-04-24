@@ -12,10 +12,6 @@
 
 include "platform.bas"
 
-#if BANK_SIZE
-BANK ROM 128
-#endif
-
 ' ==========================================
 ' ENTRY POINT
 ' ------------------------------------------
@@ -337,15 +333,7 @@ include "levels.bas"
 include "gen/gpu/gpu-retroplex.bin.pletter.bas"
 include "gen/gpu/gpu-pal-fade.bin.bas"
 
-#if BANK8
-  include "gen/pletter/levelsdat.pletter_8k.b0.bas"
-#elif BANK_SIZE
-  include "gen/pletter/levelsdat.pletter_16k.b0.bas"
-#elif NABU
-  include "gen/pletter/levelsdat.pletter_48.bas"
-#else
-  include "gen/pletter/levelsdat.pletter.bas"
-#endif
+include "leveldata.bas"
 
 #if BANK_SIZE
 BANK 1
@@ -357,10 +345,3 @@ include "gen/pletter/sprites.pletter.bas"
 include "gen/pletter/panel.pletter.bas"
 include "gen/pletter/bmpfont.pletter.bas"
 include "gen/pletter/tilemap.pletter.bas"
-
-
-#if BANK8
-  include "gen/pletter/levelsdat.pletter_8k.bas"
-#elif BANK_SIZE
-  include "gen/pletter/levelsdat.pletter_16k.bas"
-#endif
