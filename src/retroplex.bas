@@ -10,6 +10,8 @@
 ' https://github.com/visrealm/retroplex
 '
 
+include "platform.bas"
+
 #if BANK_SIZE
 BANK ROM 128
 #endif
@@ -49,7 +51,6 @@ CONST #GPU_RENDER_TEXT          = #GPU_START_ADDR + 8
 ' ==========================================
 ' INCLUDES
 ' ------------------------------------------
-include "platform.bas"
 include "banksel.bas"
 include "vdp-utils.bas"
 include "vdp-dma.bas"
