@@ -12,7 +12,7 @@
 
 LEVEL = 1
 PAGE = 0
-CONST MAXPAGE                   = 111 / 24
+CONST MAXPAGE                   = (LEVEL_COUNT - 1) / 24
 
 levelSelect: PROCEDURE
 
@@ -33,9 +33,9 @@ levelSelect: PROCEDURE
     IF NAV(NAV_DOWN) THEN
       IF SCR_IDX = 23 THEN
         GOSUB nextPage
-        IF PAGE = MAXPAGE THEN SCR_IDX =(111 % 24) - 1
+        IF PAGE = MAXPAGE THEN SCR_IDX =((LEVEL_COUNT - 1) % 24)
       ELSE
-        IF PAGE < MAXPAGE OR SCR_IDX <(111 % 24) - 1 THEN
+        IF PAGE < MAXPAGE OR SCR_IDX <((LEVEL_COUNT - 1) % 24) THEN
           SCR_IDX = SCR_IDX + 1
         END IF
       END IF
@@ -87,7 +87,7 @@ END
 renderLevelPage: PROCEDURE
   LMIN = PAGE * 24 + 1
   LMAX =(PAGE + 1) * 24
-  IF LMAX > 111 THEN LMAX = 111
+  IF LMAX > LEVEL_COUNT THEN LMAX = LEVEL_COUNT
 
   #TITLEADDR = $2800 + 1 +((LMIN - 1) * 23)
   FILL_BUFFER(" ")

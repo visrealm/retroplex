@@ -641,11 +641,16 @@ function(cvbasic_setup_pletter_compression)
         get_filename_component(BASENAME ${PLETTER_FILE} NAME_WE)
         set(OUTPUT_FILE "${PLET_OUTPUT_DIR}/${BASENAME}.pletter.bas")
 
+        set(EXTRA_ARGS "")
+        if(BASENAME STREQUAL "levelsdat")
+            set(EXTRA_ARGS --max-labels 48)
+        endif()
+
         add_custom_command(
             OUTPUT "${OUTPUT_FILE}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${PLET_OUTPUT_DIR}"
             COMMAND ${CMAKE_COMMAND} -E env "PLETTER_EXE=${PLETTER_EXE_PATH}"
-                    ${PYTHON} "${CMAKE_SOURCE_DIR}/tools/cvpletter.py" "${PLETTER_FILE}" -o "${PLET_OUTPUT_DIR}"
+                    ${PYTHON} "${CMAKE_SOURCE_DIR}/tools/cvpletter.py" "${PLETTER_FILE}" -o "${PLET_OUTPUT_DIR}" ${EXTRA_ARGS}
             DEPENDS "${PLETTER_FILE}" "${CMAKE_SOURCE_DIR}/tools/cvpletter.py" ${PLET_TOOL_DEPS}
             WORKING_DIRECTORY "${PLET_SOURCE_DIR}"
             COMMENT "Compressing ${BASENAME}.bas -> gen/pletter/${BASENAME}.pletter.bas"

@@ -19,6 +19,13 @@
   CONST BANK_SIZE                 = 16
 #elif SG1000
   CONST BANK_SIZE                 = 16
+#elif NABU
+  CONST BANK_SIZE                 = 0
+  CONST LEVEL_COUNT               = 48
 #else
   CONST BANK_SIZE                 = 0
+#endif
+
+#if NOT LEVEL_COUNT
+  CONST LEVEL_COUNT               = 111
 #endif

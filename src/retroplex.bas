@@ -10,7 +10,9 @@
 ' https://github.com/visrealm/retroplex
 '
 
+#if BANK_SIZE
 BANK ROM 128
+#endif
 
 ' ==========================================
 ' ENTRY POINT
@@ -336,11 +338,17 @@ include "gen/gpu/gpu-pal-fade.bin.bas"
 
 #if BANK8
   include "gen/pletter/levelsdat.pletter_8k.b0.bas"
-#else
+#elif BANK_SIZE
   include "gen/pletter/levelsdat.pletter_16k.b0.bas"
+#elif NABU
+  include "gen/pletter/levelsdat.pletter_48.bas"
+#else
+  include "gen/pletter/levelsdat.pletter.bas"
 #endif
 
+#if BANK_SIZE
 BANK 1
+#endif
 include "gen/pletter/palette.pletter.bas"
 include "gen/pletter/tiles_1.pletter.bas"
 include "gen/pletter/tiles_2.pletter.bas"

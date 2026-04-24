@@ -340,6 +340,21 @@ def allocateDataToBanks(compressedBlocks, bank0_labels, bank_size, start_bank=1)
     return banks
 
 
+def truncateBlocks(compressedBlocks, keep_labels, max_labels):
+    """Return a new dict containing keep_labels (header/titles in bank 0) plus
+    the first max_labels remaining blocks, preserving insertion order."""
+    keep_set = set(keep_labels)
+    result = {}
+    remaining = max_labels
+    for label, data in compressedBlocks.items():
+        if label in keep_set:
+            result[label] = data
+        elif remaining > 0:
+            result[label] = data
+            remaining -= 1
+    return result
+
+
 def writeFinalBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, has_chunks=False):
     """generates the output .pletter.bas with compressed data blocks."""
 
@@ -405,6 +420,22 @@ def writeFinalBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, has_ch
                 count = base_label_chunks[base_label]
                 f.write(f"    DATA {count} ' {base_label}\n")
             f.write(f"  {baseCamelName}ChunkCountEnd:\n\n")
+        elif len(compressedBlocks) > 1:
+            # Multi-label file without chunking: emit label catalogue + zeroed
+            # Banks array so code written for the banked path works unchanged
+            # on non-banked targets (bank select becomes a no-op).
+            all_labels = list(compressedBlocks.keys())
+
+            f.write(f"  #{baseCamelName}Catalogue:\n")
+            for label in all_labels:
+                pletter_label = _format_pletter_label(label, "Pletter")
+                f.write(f"    DATA VARPTR {pletter_label}(0)\n")
+            f.write(f"  {baseCamelName}CatalogueEnd:\n\n")
+
+            f.write(f"  {baseCamelName}Banks:\n")
+            for label in all_labels:
+                f.write(f"    DATA BYTE 0 ' {label}\n")
+            f.write(f"  {baseCamelName}BanksEnd:\n\n")
 
         for label, compressed in compressedBlocks.items():
             inSize = sourceSizes[label]
@@ -573,11 +604,27 @@ def writeBankedBas(inputBas, basOutputPath, compressedBlocks, sourceSizes, bank0
 
 
 def main():
-    if len(sys.argv) < 2 or len(sys.argv) > 4:
-        print("Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir]")
+    # Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir] [--max-labels N]
+    args = sys.argv[1:]
+
+    max_labels = None
+    # Extract --max-labels N (kept separate so it can appear anywhere)
+    filtered = []
+    i = 0
+    while i < len(args):
+        if args[i] == '--max-labels' and i + 1 < len(args):
+            max_labels = int(args[i + 1])
+            i += 2
+        else:
+            filtered.append(args[i])
+            i += 1
+    args = filtered
+
+    if len(args) < 1 or len(args) > 3:
+        print("Usage: python cvpletter.py <input.bas> [output.bas] [-o output_dir] [--max-labels N]")
         sys.exit(1)
 
-    inputBas = Path(sys.argv[1])
+    inputBas = Path(args[0])
     if not inputBas.exists():
         print(f"[X] File not found: {inputBas}")
         sys.exit(1)
@@ -591,13 +638,13 @@ def main():
     outputDir = None
 
     # Check for -o flag
-    if len(sys.argv) >= 3:
-        if sys.argv[2] == '-o' and len(sys.argv) == 4:
-            outputDir = Path(sys.argv[3])
-        elif len(sys.argv) == 3 and sys.argv[2] != '-o':
-            outputBasPath = Path(sys.argv[2])
-        elif len(sys.argv) == 4 and sys.argv[2] != '-o':
-            outputBasPath = Path(sys.argv[2])
+    if len(args) >= 2:
+        if args[1] == '-o' and len(args) == 3:
+            outputDir = Path(args[2])
+        elif len(args) == 2 and args[1] != '-o':
+            outputBasPath = Path(args[1])
+        elif len(args) == 3 and args[1] != '-o':
+            outputBasPath = Path(args[1])
 
     print(f"Processing {inputBas}...")
 
@@ -661,6 +708,15 @@ def main():
         print(f"Generating non-banked version: {outputBasPath.name}")
         writeFinalBas(inputBas, outputBasPath, compressedBlocks, sourceSizes, has_chunks)
 
+        if max_labels is not None:
+            # Keep the first label (e.g. levelTitles) unconditionally; count
+            # max_labels from the remaining labels.
+            first = next(iter(compressedBlocks))
+            reduced = truncateBlocks(compressedBlocks, [first], max_labels)
+            reducedPath = outputBasPath.parent / f"{outputBasPath.stem}_{max_labels}.bas"
+            print(f"Generating reduced non-banked version ({max_labels} labels): {reducedPath.name}")
+            writeFinalBas(inputBas, reducedPath, reduced, sourceSizes, has_chunks)
+
         # Generate 8KB version
         output8k = outputBasPath.parent / f"{outputBasPath.stem}_8k.bas"
         print(f"Generating 8KB bank version: {output8k.name}")
@@ -683,6 +739,12 @@ def main():
         outputBasPath.parent.mkdir(parents=True, exist_ok=True)
 
         writeFinalBas(inputBas, outputBasPath, compressedBlocks, sourceSizes, has_chunks)
+
+        if max_labels is not None:
+            reduced = truncateBlocks(compressedBlocks, [], max_labels)
+            reducedPath = outputBasPath.parent / f"{outputBasPath.stem}_{max_labels}.bas"
+            print(f"Generating reduced non-banked version ({max_labels} labels): {reducedPath.name}")
+            writeFinalBas(inputBas, reducedPath, reduced, sourceSizes, has_chunks)
 
 if __name__ == '__main__':
     main()
