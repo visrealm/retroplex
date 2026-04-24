@@ -1,4 +1,5 @@
-src/pletter/** linguist-vendored
-
 **/*.a99 linguist-language=Assembly
 **/*.bas linguist-language=Basic
+src/pletter/levelsdat.bas  linguist-language=Pure\ Data
+res/** linguist-vendored
+
